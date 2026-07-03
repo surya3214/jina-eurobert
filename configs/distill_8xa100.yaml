@@ -44,6 +44,8 @@ training:
   seed: 42
 
 data:
+  datasets_dir: data/hf_datasets
+  local_files_only: true
   teacher_embeddings_dir: data/teacher_embeddings
   output_dir: output/distilled-eurobert
   pair_datasets:

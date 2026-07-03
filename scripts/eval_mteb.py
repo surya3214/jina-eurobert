@@ -12,6 +12,8 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 from jina_eurobert.config import load_config
+from jina_eurobert.datasets_registry import manifest_path_for, read_manifest
+from jina_eurobert.hf_datasets import local_datasets_context, resolve_datasets_dir
 from jina_eurobert.models import build_student_model
 
 
@@ -105,6 +107,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--truncate-dim", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--datasets-dir", type=str, default=None)
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -129,16 +132,25 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    datasets_dir = resolve_datasets_dir(args.datasets_dir, config)
+    if datasets_dir:
+        manifest = read_manifest(manifest_path_for(datasets_dir))
+        print(f"Using local datasets from {datasets_dir} ({len(manifest)} repos in manifest)")
+
     evaluation = mteb.MTEB(tasks=tasks)
-    results = evaluation.run(
-        routed_model,
-        encode_kwargs={
+    run_kwargs = {
+        "encode_kwargs": {
             "batch_size": args.batch_size,
             "normalize_embeddings": True,
             "truncate_dim": args.truncate_dim,
         },
-        output_folder=str(output_dir),
-    )
+        "output_folder": str(output_dir),
+    }
+    if datasets_dir:
+        with local_datasets_context(datasets_dir, manifest):
+            results = evaluation.run(routed_model, **run_kwargs)
+    else:
+        results = evaluation.run(routed_model, **run_kwargs)
 
     summary_path = output_dir / "summary.json"
     serializable = summarize_results(results)

@@ -15,6 +15,32 @@ Distill [Qwen/Qwen3-Embedding-4B](https://huggingface.co/Qwen/Qwen3-Embedding-4B
 pip install -e .
 ```
 
+## Offline datasets
+
+Training and MTEB evaluation can load Hugging Face datasets from a local directory instead of the Hub API at runtime.
+
+```bash
+# 1. Download all datasets referenced by the default config
+python scripts/download_datasets.py \
+  --output-dir data/hf_datasets \
+  --config configs/distill_8xa100.yaml
+
+# Training only (smaller/faster)
+python scripts/download_datasets.py --output-dir data/hf_datasets --training-only
+
+# MTEB only
+python scripts/download_datasets.py --output-dir data/hf_datasets --mteb-only
+
+# List repos without downloading
+python scripts/download_datasets.py --output-dir data/hf_datasets --config configs/distill_8xa100.yaml --dry-run
+```
+
+Point training/eval at the local cache via config (`data.datasets_dir`), CLI (`--datasets-dir`), or env:
+
+```bash
+export JINA_EUROBERT_DATASETS_DIR=data/hf_datasets
+```
+
 ## 1. Precompute teacher MRL embeddings
 
 ```bash
@@ -43,7 +69,8 @@ PYTHONPATH=src:scripts python scripts/train_distill.py --smoke-test --max-sample
 ```bash
 PYTHONPATH=src:scripts python scripts/eval_mteb.py \
   --model-path output/distilled-eurobert/final \
-  --output-dir output/mteb_results
+  --output-dir output/mteb_results \
+  --datasets-dir data/hf_datasets
 ```
 
 Runs retrieval + STS tasks from `MTEB(eng, v2)` and `MTEB(Multilingual, v2)` (configurable in `configs/distill_8xa100.yaml`). Prefix routing: `Query:` / `Document:` for retrieval, `Document:` for STS.

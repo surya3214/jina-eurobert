@@ -5,6 +5,8 @@ from typing import Any
 
 import yaml
 
+from jina_eurobert.hf_datasets import resolve_datasets_dir
+
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "distill_8xa100.yaml"
 
 
@@ -19,3 +21,11 @@ def matryoshka_dims(config: dict[str, Any]) -> list[int]:
     if isinstance(dims, int):
         return [dims]
     return [int(dim) for dim in dims]
+
+
+def datasets_dir(config: dict[str, Any]) -> Path | None:
+    return resolve_datasets_dir(config=config)
+
+
+def local_files_only(config: dict[str, Any]) -> bool:
+    return local_files_only_setting(config)

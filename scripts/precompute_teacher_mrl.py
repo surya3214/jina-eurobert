@@ -15,6 +15,8 @@ from tqdm import tqdm
 
 from jina_eurobert.config import load_config, matryoshka_dims
 from jina_eurobert.data import build_training_mixture, load_gooaq_pair_dataset, load_nq_pair_dataset, teacher_index_key, text_hash
+from jina_eurobert.datasets_registry import manifest_path_for, read_manifest
+from jina_eurobert.hf_datasets import resolve_datasets_dir
 from jina_eurobert.models import build_teacher_model
 
 
@@ -110,6 +112,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-samples", type=int, default=5000)
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--datasets-dir", type=str, default=None)
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -119,6 +122,11 @@ def main() -> None:
     output_dir = Path(args.output_dir or config["data"]["teacher_embeddings_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     dims = matryoshka_dims(config)
+
+    datasets_dir = resolve_datasets_dir(args.datasets_dir, config)
+    if datasets_dir and rank == 0:
+        manifest = read_manifest(manifest_path_for(datasets_dir))
+        print(f"Using local datasets from {datasets_dir} ({len(manifest)} repos in manifest)")
 
     if args.smoke_test:
         if rank == 0:
@@ -132,8 +140,12 @@ def main() -> None:
     teacher_cfg = config["teacher"]
     pair_sets = []
     try:
-        pair_sets.append(load_gooaq_pair_dataset(max_samples=args.max_samples))
-        pair_sets.append(load_nq_pair_dataset(max_samples=args.max_samples))
+        pair_sets.append(
+            load_gooaq_pair_dataset(max_samples=args.max_samples, datasets_dir=datasets_dir, config=config)
+        )
+        pair_sets.append(
+            load_nq_pair_dataset(max_samples=args.max_samples, datasets_dir=datasets_dir, config=config)
+        )
     except Exception as exc:  # noqa: BLE001
         if rank == 0:
             print(f"Warning: could not load HF pair datasets ({exc}); using smoke mixture.")

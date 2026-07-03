@@ -156,3 +156,47 @@ def test_combined_loss_routing():
     loss_fn.set_batch_type("sts")
     sts_value = loss_fn(features, torch.tensor([4.0, 3.5]))
     assert sts_value.item() >= 0
+
+
+def test_manifest_lists_training_datasets():
+    from jina_eurobert.datasets_registry import TRAINING_DATASETS
+
+    repo_ids = {entry["repo_id"] for entry in TRAINING_DATASETS}
+    assert repo_ids == {
+        "sentence-transformers/gooaq",
+        "sentence-transformers/natural-questions",
+        "sentence-transformers/stsb",
+        "sentence-transformers/msmarco-hard-negatives",
+    }
+
+
+def test_load_hf_split_from_local_dir(tmp_path):
+    from datasets import Dataset, DatasetDict
+
+    from jina_eurobert.datasets_registry import write_manifest
+    from jina_eurobert.hf_datasets import load_hf_split
+
+    local_dir = tmp_path / "test__repo"
+    DatasetDict({"train": Dataset.from_dict({"text": ["a", "b"]})}).save_to_disk(str(local_dir))
+    write_manifest(
+        {
+            "test/repo": {
+                "revision": "main",
+                "local_dir": local_dir.name,
+                "splits": ["train"],
+            }
+        },
+        tmp_path / "manifest.json",
+    )
+
+    dataset = load_hf_split("test/repo", "train", datasets_dir=tmp_path, local_files_only=True)
+    assert len(dataset) == 2
+    assert dataset[0]["text"] == "a"
+
+
+def test_mteb_dataset_collection():
+    from jina_eurobert.datasets_registry import collect_mteb_datasets
+
+    datasets = collect_mteb_datasets(["MTEB(eng, v2)"])
+    assert datasets
+    assert all(repo_id.startswith("mteb/") for repo_id in datasets)

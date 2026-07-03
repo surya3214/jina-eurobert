@@ -13,6 +13,8 @@ from sentence_transformers.sentence_transformer.training_args import SentenceTra
 from jina_eurobert.collators import DistillationDataCollator
 from jina_eurobert.config import load_config, matryoshka_dims
 from jina_eurobert.data import build_training_mixture, load_teacher_embedding_index
+from jina_eurobert.datasets_registry import manifest_path_for, read_manifest
+from jina_eurobert.hf_datasets import resolve_datasets_dir
 from jina_eurobert.losses import CombinedDistillationLoss
 from jina_eurobert.models import build_student_model
 from jina_eurobert.trainer import DistillationTrainer
@@ -25,6 +27,7 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=5000)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--datasets-dir", type=str, default=None)
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -35,6 +38,11 @@ def main() -> None:
     output_dir = Path(args.output_dir or config["data"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    datasets_dir = resolve_datasets_dir(args.datasets_dir, config)
+    if datasets_dir and os.environ.get("RANK", "0") == "0":
+        manifest = read_manifest(manifest_path_for(datasets_dir))
+        print(f"Using local datasets from {datasets_dir} ({len(manifest)} repos in manifest)")
+
     teacher_index = load_teacher_embedding_index(config["data"]["teacher_embeddings_dir"])
     if teacher_index and os.environ.get("RANK", "0") == "0":
         print(f"Loaded {len(teacher_index)} teacher embeddings from index.")
@@ -44,6 +52,7 @@ def main() -> None:
         teacher_index=teacher_index,
         max_samples_per_source=args.max_samples,
         smoke_test=args.smoke_test,
+        datasets_dir=datasets_dir,
     )
 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))

@@ -32,3 +32,4 @@ include = ["jina_eurobert*", "scripts*"]
 jina-eurobert-precompute = "scripts.precompute_teacher_mrl:main"
 jina-eurobert-train = "scripts.train_distill:main"
 jina-eurobert-eval = "scripts.eval_mteb:main"
+jina-eurobert-download-datasets = "scripts.download_datasets:main"

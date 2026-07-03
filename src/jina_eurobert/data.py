@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
+from datasets import Dataset, DatasetDict, concatenate_datasets
 
 from jina_eurobert.config import matryoshka_dims
+from jina_eurobert.hf_datasets import load_hf_split, resolve_datasets_dir
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -66,8 +67,19 @@ def _normalize_pair_dataset(dataset: Dataset, anchor_col: str, positive_col: str
     )
 
 
-def load_gooaq_pair_dataset(split: str = "train", max_samples: int | None = None) -> Dataset:
-    dataset = load_dataset("sentence-transformers/gooaq", split=split)
+def load_gooaq_pair_dataset(
+    split: str = "train",
+    max_samples: int | None = None,
+    *,
+    datasets_dir: str | Path | None = None,
+    config: dict[str, Any] | None = None,
+) -> Dataset:
+    dataset = load_hf_split(
+        "sentence-transformers/gooaq",
+        split,
+        datasets_dir=datasets_dir,
+        config=config,
+    )
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
     if "question" in dataset.column_names and "answer" in dataset.column_names:
@@ -75,8 +87,19 @@ def load_gooaq_pair_dataset(split: str = "train", max_samples: int | None = None
     return _normalize_pair_dataset(dataset, "anchor", "positive")
 
 
-def load_nq_pair_dataset(split: str = "train", max_samples: int | None = None) -> Dataset:
-    dataset = load_dataset("sentence-transformers/natural-questions", split=split)
+def load_nq_pair_dataset(
+    split: str = "train",
+    max_samples: int | None = None,
+    *,
+    datasets_dir: str | Path | None = None,
+    config: dict[str, Any] | None = None,
+) -> Dataset:
+    dataset = load_hf_split(
+        "sentence-transformers/natural-questions",
+        split,
+        datasets_dir=datasets_dir,
+        config=config,
+    )
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
     anchor_col = "query" if "query" in dataset.column_names else "question"
@@ -84,16 +107,37 @@ def load_nq_pair_dataset(split: str = "train", max_samples: int | None = None) -
     return _normalize_pair_dataset(dataset, anchor_col, positive_col)
 
 
-def load_stsb_dataset(split: str = "train", max_samples: int | None = None) -> Dataset:
-    dataset = load_dataset("sentence-transformers/stsb", split=split)
+def load_stsb_dataset(
+    split: str = "train",
+    max_samples: int | None = None,
+    *,
+    datasets_dir: str | Path | None = None,
+    config: dict[str, Any] | None = None,
+) -> Dataset:
+    dataset = load_hf_split(
+        "sentence-transformers/stsb",
+        split,
+        datasets_dir=datasets_dir,
+        config=config,
+    )
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
     mapped = dataset.rename_columns({"sentence1": "anchor", "sentence2": "positive", "score": "score"})
     return mapped.select_columns(["anchor", "positive", "score"])
 
 
-def load_msmarco_triplet_dataset(max_samples: int | None = None) -> Dataset:
-    dataset = load_dataset("sentence-transformers/msmarco-hard-negatives", split="train")
+def load_msmarco_triplet_dataset(
+    max_samples: int | None = None,
+    *,
+    datasets_dir: str | Path | None = None,
+    config: dict[str, Any] | None = None,
+) -> Dataset:
+    dataset = load_hf_split(
+        "sentence-transformers/msmarco-hard-negatives",
+        "train",
+        datasets_dir=datasets_dir,
+        config=config,
+    )
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
     if "query" in dataset.column_names:
@@ -193,6 +237,7 @@ def build_training_mixture(
     teacher_index: dict[str, np.ndarray] | None = None,
     max_samples_per_source: int | None = 5000,
     smoke_test: bool = False,
+    datasets_dir: str | Path | None = None,
 ) -> DatasetDict:
     """Build per-task datasets for homogeneous batches (distill / retrieval / sts)."""
     teacher_index = teacher_index or {}
@@ -202,13 +247,23 @@ def build_training_mixture(
     if smoke_test:
         return _smoke_test_datasets(teacher_dim)
 
+    resolved_datasets_dir = resolve_datasets_dir(datasets_dir, config)
+
     distill_sets: list[Dataset] = []
     for name in _as_list(config.get("data", {}).get("pair_datasets")):
         try:
             if "gooaq" in name:
-                dataset = load_gooaq_pair_dataset(max_samples=max_samples_per_source)
+                dataset = load_gooaq_pair_dataset(
+                    max_samples=max_samples_per_source,
+                    datasets_dir=resolved_datasets_dir,
+                    config=config,
+                )
             elif "natural-questions" in name:
-                dataset = load_nq_pair_dataset(max_samples=max_samples_per_source)
+                dataset = load_nq_pair_dataset(
+                    max_samples=max_samples_per_source,
+                    datasets_dir=resolved_datasets_dir,
+                    config=config,
+                )
             else:
                 continue
             distill_sets.append(prepare_distill_dataset(dataset, teacher_index, teacher_dim))
@@ -219,7 +274,11 @@ def build_training_mixture(
     for name in _as_list(config.get("data", {}).get("triplet_datasets")):
         try:
             if "msmarco" in name:
-                triplets = load_msmarco_triplet_dataset(max_samples=max_samples_per_source)
+                triplets = load_msmarco_triplet_dataset(
+                    max_samples=max_samples_per_source,
+                    datasets_dir=resolved_datasets_dir,
+                    config=config,
+                )
                 retrieval_sets.append(prepare_retrieval_dataset(triplets))
         except Exception as exc:  # noqa: BLE001
             print(f"Skipping triplet dataset {name}: {exc}")
@@ -228,7 +287,11 @@ def build_training_mixture(
     for name in _as_list(config.get("data", {}).get("sts_datasets")):
         try:
             if "stsb" in name:
-                stsb = load_stsb_dataset(max_samples=max_samples_per_source)
+                stsb = load_stsb_dataset(
+                    max_samples=max_samples_per_source,
+                    datasets_dir=resolved_datasets_dir,
+                    config=config,
+                )
                 sts_sets.append(prepare_sts_dataset(stsb))
         except Exception as exc:  # noqa: BLE001
             print(f"Skipping STS dataset {name}: {exc}")
