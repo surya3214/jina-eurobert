@@ -25,9 +25,10 @@ TRAINING_DATASETS: list[dict[str, Any]] = [
         "splits": ["train"],
     },
     {
-        "repo_id": "sentence-transformers/msmarco-hard-negatives",
+        "repo_id": "sentence-transformers/msmarco-bm25",
         "revision": "main",
         "splits": ["train"],
+        "config": "triplet",
     },
 ]
 
@@ -93,16 +94,21 @@ def training_datasets_from_config(config: dict[str, Any]) -> dict[str, dict[str,
 
     entries: dict[str, dict[str, Any]] = {}
     defaults = {item["repo_id"]: item for item in TRAINING_DATASETS}
+    dataset_configs = data_cfg.get("dataset_configs", {})
     for repo_id in dict.fromkeys(repo_ids):
         default = defaults.get(
             repo_id,
             {"repo_id": repo_id, "revision": "main", "splits": ["train"]},
         )
-        entries[repo_id] = {
+        entry = {
             "revision": default["revision"],
             "local_dir": safe_dir_name(repo_id),
             "splits": list(default["splits"]),
         }
+        config_name = dataset_configs.get(repo_id, default.get("config"))
+        if config_name:
+            entry["config"] = config_name
+        entries[repo_id] = entry
     return entries
 
 

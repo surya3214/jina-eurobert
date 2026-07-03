@@ -53,7 +53,7 @@ data:
     - sentence-transformers/natural-questions
     - sentence-transformers/stsb
   triplet_datasets:
-    - sentence-transformers/msmarco-hard-negatives
+    - sentence-transformers/msmarco-bm25
   sts_datasets:
     - sentence-transformers/stsb
 

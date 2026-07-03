@@ -84,13 +84,16 @@ def download_repo(repo_id: str, revision: str, local_dir: Path, force: bool) -> 
         download_repo_snapshot(repo_id, revision, local_dir)
 
 
-def verify_local_load(repo_id: str, local_dir: Path, splits: list[str]) -> None:
+def verify_local_load(repo_id: str, local_dir: Path, splits: list[str], config_name: str | None = None) -> None:
     from datasets import load_dataset
 
     if not splits:
         return
     split = splits[0]
-    dataset = load_dataset(str(local_dir), split=split, trust_remote_code=True)
+    if config_name:
+        dataset = load_dataset(str(local_dir), config_name, split=split)
+    else:
+        dataset = load_dataset(str(local_dir), split=split)
     if len(dataset) == 0:
         raise RuntimeError(f"{repo_id} loaded 0 rows from {local_dir}")
 
@@ -164,7 +167,7 @@ def main() -> None:
         local_dir = output_dir / entry["local_dir"]
         print(f"  {repo_id} @ {revision} -> {local_dir}")
         download_repo(repo_id, revision, local_dir, force=args.force)
-        verify_local_load(repo_id, local_dir, entry.get("splits", []))
+        verify_local_load(repo_id, local_dir, entry.get("splits", []), entry.get("config"))
         manifest[repo_id] = entry
         write_manifest(manifest, manifest_file)
 

@@ -166,7 +166,7 @@ def test_manifest_lists_training_datasets():
         "sentence-transformers/gooaq",
         "sentence-transformers/natural-questions",
         "sentence-transformers/stsb",
-        "sentence-transformers/msmarco-hard-negatives",
+        "sentence-transformers/msmarco-bm25",
     }
 
 
@@ -192,6 +192,36 @@ def test_load_hf_split_from_local_dir(tmp_path):
     dataset = load_hf_split("test/repo", "train", datasets_dir=tmp_path, local_files_only=True)
     assert len(dataset) == 2
     assert dataset[0]["text"] == "a"
+
+
+def test_training_manifest_includes_msmarco_config():
+    from jina_eurobert.config import load_config
+    from jina_eurobert.datasets_registry import training_datasets_from_config
+
+    entries = training_datasets_from_config(load_config())
+    msmarco = entries["sentence-transformers/msmarco-bm25"]
+    assert msmarco["config"] == "triplet"
+    assert msmarco["local_dir"] == "sentence-transformers__msmarco-bm25"
+
+
+def test_load_msmarco_triplet_from_local_dir():
+    from pathlib import Path
+
+    import pytest
+
+    from jina_eurobert.data import load_msmarco_triplet_dataset
+
+    snapshot = Path("/tmp/msmarco_bm25/sentence-transformers__msmarco-bm25")
+    if not (snapshot / "triplet").exists():
+        pytest.skip("msmarco-bm25 snapshot not available")
+
+    dataset = load_msmarco_triplet_dataset(
+        max_samples=2,
+        datasets_dir=Path("/tmp/msmarco_bm25"),
+        config={"data": {"local_files_only": True}},
+    )
+    assert dataset.column_names == ["anchor", "positive", "negative"]
+    assert len(dataset) == 2
 
 
 def test_mteb_dataset_collection():

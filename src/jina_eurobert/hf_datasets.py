@@ -52,12 +52,31 @@ def _offline_error(repo_id: str, datasets_dir: Path, revision: str | None) -> Ru
     )
 
 
+def _load_local_dataset(
+    local_path: Path,
+    split: str,
+    *,
+    config_name: str | None = None,
+    trust_remote_code: bool = True,
+) -> Dataset:
+    kwargs: dict[str, Any] = {
+        "split": split,
+        "trust_remote_code": trust_remote_code,
+        "download_mode": DownloadMode.REUSE_DATASET_IF_EXISTS,
+    }
+    path = str(local_path)
+    if config_name:
+        return load_dataset(path, config_name, **kwargs)
+    return load_dataset(path, **kwargs)
+
+
 def load_hf_split(
     repo_id: str,
     split: str,
     *,
     datasets_dir: str | Path | None = None,
     config: dict[str, Any] | None = None,
+    config_name: str | None = None,
     local_files_only: bool | None = None,
     revision: str | None = None,
     trust_remote_code: bool = True,
@@ -65,6 +84,8 @@ def load_hf_split(
     """Load a dataset split from a local snapshot when available."""
     resolved_dir = resolve_datasets_dir(datasets_dir, config)
     strict_local = local_files_only if local_files_only is not None else local_files_only_setting(config)
+    dataset_configs = (config or {}).get("data", {}).get("dataset_configs", {})
+    resolved_config = config_name or dataset_configs.get(repo_id)
 
     if resolved_dir is not None:
         manifest = _manifest_for(resolved_dir)
@@ -75,11 +96,12 @@ def load_hf_split(
                 if strict_local:
                     raise _offline_error(repo_id, resolved_dir, entry.get("revision"))
             else:
-                return load_dataset(
-                    str(local_path),
-                    split=split,
+                split_config = entry.get("config") or resolved_config
+                return _load_local_dataset(
+                    local_path,
+                    split,
+                    config_name=split_config,
                     trust_remote_code=trust_remote_code,
-                    download_mode=DownloadMode.REUSE_DATASET_IF_EXISTS,
                 )
         elif strict_local:
             raise _offline_error(repo_id, resolved_dir, revision)
@@ -95,6 +117,13 @@ def load_hf_split(
         "split": split,
         "trust_remote_code": trust_remote_code,
     }
+    if resolved_dir is not None:
+        entry = _manifest_for(resolved_dir).get(repo_id)
+        split_config = (entry or {}).get("config") or resolved_config
+    else:
+        split_config = resolved_config
+    if split_config:
+        kwargs["name"] = split_config
     if revision:
         kwargs["revision"] = revision
     return load_dataset(**kwargs)
@@ -116,12 +145,19 @@ def local_datasets_context(
         path = kwargs.get("path") or (args[0] if args else None)
         if path in manifest:
             local_path = resolved_dir / manifest[path]["local_dir"]
+            entry = manifest[path]
+            config_name = entry.get("config") or kwargs.get("name")
             kwargs = dict(kwargs)
             kwargs["path"] = str(local_path)
             kwargs["local_files_only"] = True
             kwargs.pop("revision", None)
+            if config_name:
+                kwargs["name"] = config_name
             if args:
-                return original(str(local_path), *args[1:], **kwargs)
+                positional = [str(local_path)]
+                if config_name:
+                    positional.append(config_name)
+                return original(*positional, *args[1:], **kwargs)
             return original(**kwargs)
         return original(*args, **kwargs)
 

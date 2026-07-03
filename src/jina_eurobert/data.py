@@ -133,10 +133,11 @@ def load_msmarco_triplet_dataset(
     config: dict[str, Any] | None = None,
 ) -> Dataset:
     dataset = load_hf_split(
-        "sentence-transformers/msmarco-hard-negatives",
+        "sentence-transformers/msmarco-bm25",
         "train",
         datasets_dir=datasets_dir,
         config=config,
+        config_name="triplet",
     )
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
