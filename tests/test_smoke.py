@@ -56,6 +56,13 @@ def test_build_training_mixture_scalar_matryoshka_dims():
     assert set(mixture.keys()) == {"distill", "retrieval", "sts"}
 
 
+def test_resolve_mteb_benchmark_alias():
+    from scripts.eval_mteb import resolve_benchmark
+
+    benchmark = resolve_benchmark("MTEB(multilingual, v2)")
+    assert benchmark.name == "MTEB(Multilingual, v2)"
+
+
 def test_mrl_distill_loss_with_teacher_labels():
     model = _DummyModel()
     loss_fn = MRLEmbedDistillLoss(model, matryoshka_dims=768)  # type: ignore[arg-type]

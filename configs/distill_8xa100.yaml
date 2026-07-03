@@ -58,6 +58,6 @@ data:
 eval:
   benchmarks:
     - MTEB(eng, v2)
-    - MTEB(multilingual, v2)
+    - MTEB(Multilingual, v2)
   max_seq_length: 512
   batch_size: 32

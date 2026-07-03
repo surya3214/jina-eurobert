@@ -48,6 +48,16 @@ class PrefixRoutingModel:
         )
 
 
+def resolve_benchmark(benchmark_name: str):
+    """Resolve MTEB benchmark names, including common casing aliases."""
+    aliases = {
+        "MTEB(multilingual, v2)": "MTEB(Multilingual, v2)",
+        "MTEB(MULTILINGUAL, v2)": "MTEB(Multilingual, v2)",
+    }
+    canonical = aliases.get(benchmark_name, benchmark_name)
+    return mteb.get_benchmark(canonical)
+
+
 def load_tasks(
     config: dict,
     benchmark: str | None,
@@ -57,11 +67,11 @@ def load_tasks(
         return list(mteb.get_tasks(tasks=task_names))
 
     if benchmark:
-        return list(mteb.get_benchmark(benchmark).tasks)
+        return list(resolve_benchmark(benchmark).tasks)
 
     tasks = []
     for benchmark_name in config.get("eval", {}).get("benchmarks", ["MTEB(eng, v2)"]):
-        tasks.extend(mteb.get_benchmark(benchmark_name).tasks)
+        tasks.extend(resolve_benchmark(benchmark_name).tasks)
     return tasks
 
 

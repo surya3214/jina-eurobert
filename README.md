@@ -46,7 +46,7 @@ PYTHONPATH=src:scripts python scripts/eval_mteb.py \
   --output-dir output/mteb_results
 ```
 
-Runs retrieval + STS tasks from `MTEB(eng, v2)` and `MTEB(multilingual, v2)` (configurable in `configs/distill_8xa100.yaml`). Prefix routing: `Query:` / `Document:` for retrieval, `Document:` for STS.
+Runs retrieval + STS tasks from `MTEB(eng, v2)` and `MTEB(Multilingual, v2)` (configurable in `configs/distill_8xa100.yaml`). Prefix routing: `Query:` / `Document:` for retrieval, `Document:` for STS.
 
 Smoke test (single task):
 
