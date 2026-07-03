@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import random
+from typing import Any
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from sentence_transformers import SentenceTransformer
+from sentence_transformers.sentence_transformer.losses import (
+    CoSENTLoss,
+    GlobalOrthogonalRegularizationLoss,
+    MultipleNegativesRankingLoss,
+)
+
+
+def _feature_labels(features: dict[str, torch.Tensor], key: str) -> torch.Tensor | None:
+    if key not in features:
+        return None
+    value = features[key]
+    if not torch.is_tensor(value):
+        value = torch.tensor(value, device=features["sentence_embedding"].device)
+    return value
+
+
+class MRLEmbedDistillLoss(nn.Module):
+    """Distill student embeddings to precomputed teacher MRL targets at multiple dims."""
+
+    def __init__(
+        self,
+        model: SentenceTransformer,
+        matryoshka_dims: list[int],
+        matryoshka_weights: list[float] | None = None,
+    ) -> None:
+        super().__init__()
+        self.model = model
+        self.matryoshka_dims = matryoshka_dims
+        if matryoshka_weights is None:
+            matryoshka_weights = [1.0] * len(matryoshka_dims)
+        weight_sum = sum(matryoshka_weights)
+        self.matryoshka_weights = [weight / weight_sum for weight in matryoshka_weights]
+
+    def forward(self, sentence_features: list[dict[str, torch.Tensor]], labels: torch.Tensor) -> torch.Tensor:
+        if labels is None or not torch.is_tensor(labels):
+            return torch.tensor(0.0, device=self.model.device, requires_grad=True)
+
+        sentence_features = list(sentence_features)
+        embeddings = [self.model(sentence_feature)["sentence_embedding"] for sentence_feature in sentence_features]
+
+        losses: list[torch.Tensor] = []
+        for col_idx, student in enumerate(embeddings):
+            if labels.dim() == 3:
+                teacher = labels[:, col_idx, :].to(student.device)
+            elif labels.dim() == 2 and len(embeddings) == 1:
+                teacher = labels.to(student.device)
+            else:
+                teacher = labels[:, col_idx, :].to(student.device)
+
+            for dim, weight in zip(self.matryoshka_dims, self.matryoshka_weights, strict=True):
+                student_d = F.normalize(student[..., :dim], p=2, dim=-1)
+                teacher_d = F.normalize(teacher[..., :dim], p=2, dim=-1)
+                cosine = F.cosine_similarity(student_d, teacher_d, dim=-1)
+                losses.append(weight * (1.0 - cosine).mean())
+        if not losses:
+            return torch.tensor(0.0, device=self.model.device, requires_grad=True)
+        return torch.stack(losses).sum()
+
+
+def _scalar_loss(output: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor:
+    if isinstance(output, dict):
+        return sum(output.values())
+    return output
+
+
+class CombinedDistillationLoss(nn.Module):
+    """Multi-objective loss: MRL distill + InfoNCE + CoSENT + GOR with batch routing."""
+
+    def __init__(
+        self,
+        model: SentenceTransformer,
+        matryoshka_dims: list[int],
+        loss_weights: dict[str, float],
+    ) -> None:
+        super().__init__()
+        self.model = model
+        self.loss_weights = loss_weights
+        self.distill_loss = MRLEmbedDistillLoss(model, matryoshka_dims)
+        self.infonce_loss = MultipleNegativesRankingLoss(model, scale=20.0)
+        self.cosent_loss = CoSENTLoss(model)
+        self.gor_loss = GlobalOrthogonalRegularizationLoss(model, mean_weight=0.0)
+        self._batch_type = "distill"
+
+    def set_batch_type(self, batch_type: str) -> None:
+        self._batch_type = batch_type
+
+    def get_config_dict(self) -> dict[str, Any]:
+        return {
+            "loss_weights": self.loss_weights,
+            "matryoshka_dims": self.distill_loss.matryoshka_dims,
+        }
+
+    def forward(self, sentence_features: list[dict[str, torch.Tensor]], labels: torch.Tensor) -> torch.Tensor:
+        batch_type = self._batch_type
+        total = torch.tensor(0.0, device=self.model.device, requires_grad=True)
+
+        if batch_type == "distill":
+            if (
+                labels is not None
+                and torch.is_tensor(labels)
+                and labels.dim() == 3
+                and labels.shape[1] == len(sentence_features)
+            ):
+                total = total + self.loss_weights["distill_mrl"] * self.distill_loss(sentence_features, labels)
+        elif batch_type == "retrieval":
+            total = total + self.loss_weights["infonce"] * _scalar_loss(self.infonce_loss(sentence_features, labels))
+            total = total + self.loss_weights["gor"] * _scalar_loss(self.gor_loss(sentence_features, labels))
+            if (
+                labels is not None
+                and torch.is_tensor(labels)
+                and labels.dim() == 3
+                and labels.shape[1] == len(sentence_features)
+            ):
+                total = total + self.loss_weights["distill_mrl"] * 0.5 * self.distill_loss(sentence_features, labels)
+        elif batch_type == "sts":
+            total = total + self.loss_weights["cosent"] * _scalar_loss(self.cosent_loss(sentence_features, labels))
+        else:
+            raise ValueError(f"Unknown batch_type: {batch_type}")
+        return total
+
+
+class MixedBatchRouter:
+    """Sample batch types according to configured routing probabilities."""
+
+    def __init__(self, routing: dict[str, float], seed: int = 42) -> None:
+        self.routes = list(routing.keys())
+        weights = [routing[key] for key in self.routes]
+        self.rng = random.Random(seed)
+        self.weights = weights
+
+    def sample(self) -> str:
+        return self.rng.choices(self.routes, weights=self.weights, k=1)[0]
