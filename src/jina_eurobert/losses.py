@@ -34,7 +34,9 @@ class MRLEmbedDistillLoss(nn.Module):
     ) -> None:
         super().__init__()
         self.model = model
-        self.matryoshka_dims = matryoshka_dims
+        if isinstance(matryoshka_dims, int):
+            matryoshka_dims = [matryoshka_dims]
+        self.matryoshka_dims = [int(dim) for dim in matryoshka_dims]
         if matryoshka_weights is None:
             matryoshka_weights = [1.0] * len(matryoshka_dims)
         weight_sum = sum(matryoshka_weights)
@@ -44,6 +46,12 @@ class MRLEmbedDistillLoss(nn.Module):
         if labels is None or not torch.is_tensor(labels):
             return torch.tensor(0.0, device=model_device(self.model), requires_grad=True)
 
+        if isinstance(sentence_features, dict):
+            sentence_features = [sentence_features]
+        elif not isinstance(sentence_features, (list, tuple)):
+            raise TypeError(
+                f"Expected sentence_features to be a list of feature dicts, got {type(sentence_features).__name__}"
+            )
         sentence_features = list(sentence_features)
         embeddings = [self.model(sentence_feature)["sentence_embedding"] for sentence_feature in sentence_features]
 
@@ -101,6 +109,13 @@ class CombinedDistillationLoss(nn.Module):
 
     def forward(self, sentence_features: list[dict[str, torch.Tensor]], labels: torch.Tensor) -> torch.Tensor:
         batch_type = self._batch_type
+        if isinstance(sentence_features, dict):
+            sentence_features = [sentence_features]
+        elif not isinstance(sentence_features, (list, tuple)):
+            raise TypeError(
+                f"Expected sentence_features to be a list of feature dicts, got {type(sentence_features).__name__}"
+            )
+        sentence_features = list(sentence_features)
         total = torch.tensor(0.0, device=model_device(self.model), requires_grad=True)
 
         if batch_type == "distill":

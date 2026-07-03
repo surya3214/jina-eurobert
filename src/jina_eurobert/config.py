@@ -15,4 +15,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
 
 def matryoshka_dims(config: dict[str, Any]) -> list[int]:
-    return list(config.get("matryoshka_dims", [32, 64, 128, 256, 512, 768]))
+    dims = config.get("matryoshka_dims", [32, 64, 128, 256, 512, 768])
+    if isinstance(dims, int):
+        return [dims]
+    return [int(dim) for dim in dims]

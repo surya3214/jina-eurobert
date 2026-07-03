@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
+from jina_eurobert.device import normalize_dataset_name
 from sentence_transformers.base.data_collator import BaseDataCollator
 
 TEACHER_COLUMNS = frozenset({"teacher_anchor", "teacher_positive"})
@@ -19,7 +20,7 @@ class DistillationDataCollator(BaseDataCollator):
         if not features:
             return {}
 
-        dataset_name = features[0].get("dataset_name", "distill")
+        dataset_name = normalize_dataset_name(features[0].get("dataset_name", "distill"))
         extras: dict[str, Any] = {}
 
         if "teacher_anchor" in features[0]:
@@ -35,7 +36,7 @@ class DistillationDataCollator(BaseDataCollator):
         token_rows: list[dict[str, Any]] = []
         for row in features:
             token_row: dict[str, Any] = {
-                "dataset_name": row.get("dataset_name", dataset_name),
+                "dataset_name": normalize_dataset_name(row.get("dataset_name", dataset_name)),
                 "anchor": row["anchor"],
                 "positive": row["positive"],
             }

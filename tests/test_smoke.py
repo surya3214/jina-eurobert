@@ -43,9 +43,15 @@ def test_smoke_training_mixture_schema():
     assert mixture["sts"].column_names == ["anchor", "positive", "score"]
 
 
+def test_matryoshka_dims_scalar_config():
+    from jina_eurobert.config import matryoshka_dims
+
+    assert matryoshka_dims({"matryoshka_dims": 768}) == [768]
+
+
 def test_mrl_distill_loss_with_teacher_labels():
     model = _DummyModel()
-    loss_fn = MRLEmbedDistillLoss(model, matryoshka_dims=[32, 768])  # type: ignore[arg-type]
+    loss_fn = MRLEmbedDistillLoss(model, matryoshka_dims=768)  # type: ignore[arg-type]
     features = [
         {"sentence_embedding": torch.randn(2, 768, requires_grad=True)},
         {"sentence_embedding": torch.randn(2, 768, requires_grad=True)},

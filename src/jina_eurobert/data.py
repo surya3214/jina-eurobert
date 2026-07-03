@@ -9,6 +9,14 @@ import numpy as np
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
 
 
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
 def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -194,7 +202,7 @@ def build_training_mixture(
         return _smoke_test_datasets(teacher_dim)
 
     distill_sets: list[Dataset] = []
-    for name in config.get("data", {}).get("pair_datasets", []):
+    for name in _as_list(config.get("data", {}).get("pair_datasets")):
         try:
             if "gooaq" in name:
                 dataset = load_gooaq_pair_dataset(max_samples=max_samples_per_source)
@@ -207,7 +215,7 @@ def build_training_mixture(
             print(f"Skipping pair dataset {name}: {exc}")
 
     retrieval_sets: list[Dataset] = []
-    for name in config.get("data", {}).get("triplet_datasets", []):
+    for name in _as_list(config.get("data", {}).get("triplet_datasets")):
         try:
             if "msmarco" in name:
                 triplets = load_msmarco_triplet_dataset(max_samples=max_samples_per_source)
@@ -216,7 +224,7 @@ def build_training_mixture(
             print(f"Skipping triplet dataset {name}: {exc}")
 
     sts_sets: list[Dataset] = []
-    for name in config.get("data", {}).get("sts_datasets", []):
+    for name in _as_list(config.get("data", {}).get("sts_datasets")):
         try:
             if "stsb" in name:
                 stsb = load_stsb_dataset(max_samples=max_samples_per_source)

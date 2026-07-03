@@ -66,6 +66,21 @@ def main() -> None:
 
     max_steps = 10 if args.smoke_test else (args.max_steps or training_cfg["steps"])
     per_device_batch_size = 2 if args.smoke_test else hardware_cfg["per_device_batch_size"]
+    warmup_steps = training_cfg.get("warmup_steps")
+    if warmup_steps is None and "warmup_ratio" in training_cfg:
+        warmup_steps = training_cfg["warmup_ratio"]
+
+    query_prefix = config["prefixes"]["query"]
+    document_prefix = config["prefixes"]["document"]
+    prompt_map = {
+        "distill": {"anchor": query_prefix, "positive": document_prefix},
+        "retrieval": {
+            "anchor": query_prefix,
+            "positive": document_prefix,
+            "negative": document_prefix,
+        },
+        "sts": {"anchor": document_prefix, "positive": document_prefix},
+    }
 
     training_args = SentenceTransformerTrainingArguments(
         output_dir=str(output_dir),
@@ -75,7 +90,7 @@ def main() -> None:
         gradient_accumulation_steps=hardware_cfg.get("gradient_accumulation_steps", 1),
         learning_rate=training_cfg["lr"],
         weight_decay=training_cfg.get("weight_decay", 0.01),
-        warmup_ratio=training_cfg.get("warmup_ratio", 0.1),
+        warmup_steps=warmup_steps if warmup_steps is not None else 0.0,
         max_grad_norm=training_cfg.get("max_grad_norm", 1.0),
         bf16=hardware_cfg.get("bf16", True) and torch.cuda.is_available(),
         logging_steps=1 if args.smoke_test else training_cfg.get("logging_steps", 50),
@@ -85,10 +100,9 @@ def main() -> None:
         ddp_find_unused_parameters=False,
         report_to=[],
         seed=training_cfg.get("seed", 42),
+        prompts=prompt_map,
     )
 
-    query_prefix = config["prefixes"]["query"]
-    document_prefix = config["prefixes"]["document"]
     trainer = DistillationTrainer(
         model=model,
         args=training_args,
@@ -96,20 +110,12 @@ def main() -> None:
         loss=loss,
         data_collator=DistillationDataCollator(
             preprocess_fn=model.preprocess,
-            prompts={
-                "distill": {"anchor": query_prefix, "positive": document_prefix},
-                "retrieval": {
-                    "anchor": query_prefix,
-                    "positive": document_prefix,
-                    "negative": document_prefix,
-                },
-                "sts": {"anchor": document_prefix, "positive": document_prefix},
-            },
+            prompts=prompt_map,
         ),
     )
     trainer.train()
     final_path = output_dir / "final"
-    model.save(str(final_path))
+    trainer.model.save(str(final_path))
     if os.environ.get("RANK", "0") == "0":
         print(f"Saved distilled model to {final_path}")
 
