@@ -3,6 +3,8 @@ from __future__ import annotations
 import torch
 from sentence_transformers.sentence_transformer.trainer import SentenceTransformerTrainer
 
+from jina_eurobert.device import model_device
+
 
 class DistillationTrainer(SentenceTransformerTrainer):
     """Trainer that routes multi-dataset batches to the combined distillation loss."""
@@ -17,8 +19,9 @@ class DistillationTrainer(SentenceTransformerTrainer):
             self.loss.set_batch_type(batch_type)
 
         if batch_type == "distill" and "teacher_anchor" in inputs and "teacher_positive" in inputs:
-            anchor = inputs.pop("teacher_anchor").to(model.device)
-            positive = inputs.pop("teacher_positive").to(model.device)
+            device = model_device(model)
+            anchor = inputs.pop("teacher_anchor").to(device)
+            positive = inputs.pop("teacher_positive").to(device)
             inputs["label"] = torch.stack([anchor, positive], dim=1)
         else:
             inputs.pop("teacher_anchor", None)

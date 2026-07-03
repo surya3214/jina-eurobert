@@ -58,6 +58,42 @@ def test_mrl_distill_loss_with_teacher_labels():
     assert value.item() >= 0
 
 
+def test_model_device_with_data_parallel():
+    import torch.nn as nn
+
+    from jina_eurobert.device import model_device
+
+    inner = nn.Linear(4, 4)
+    wrapped = nn.DataParallel(inner)
+    assert model_device(wrapped) == next(inner.parameters()).device
+
+
+def test_combined_loss_with_data_parallel_model():
+    import torch.nn as nn
+
+    from jina_eurobert.device import model_device
+
+    class _ModuleDummy(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.proj = nn.Linear(1, 1)
+
+        def forward(self, sentence_feature: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+            batch = sentence_feature["input_ids"].shape[0]
+            return {"sentence_embedding": self.proj(torch.zeros(batch, 1)).expand(batch, 768)}
+
+    inner = _ModuleDummy()
+    wrapped = nn.DataParallel(inner)
+    loss_fn = CombinedDistillationLoss(
+        model=wrapped,
+        matryoshka_dims=[32, 768],
+        loss_weights={"distill_mrl": 0.5, "infonce": 0.25, "cosent": 0.15, "gor": 0.1},
+    )
+    loss_fn.set_batch_type("distill")
+    value = loss_fn([], None)
+    assert value.device == model_device(wrapped)
+
+
 def test_combined_loss_routing():
     model = _DummyModel()
     loss_fn = CombinedDistillationLoss(
