@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 from datasets import Dataset, DatasetDict, concatenate_datasets, load_dataset
 
+from jina_eurobert.config import matryoshka_dims
+
 
 def _as_list(value: Any) -> list[Any]:
     if value is None:
@@ -194,8 +196,7 @@ def build_training_mixture(
 ) -> DatasetDict:
     """Build per-task datasets for homogeneous batches (distill / retrieval / sts)."""
     teacher_index = teacher_index or {}
-    dims = config.get("matryoshka_dims", [768])
-    teacher_dim = max(dims)
+    teacher_dim = max(matryoshka_dims(config))
     seed = config.get("training", {}).get("seed", 42)
 
     if smoke_test:

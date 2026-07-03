@@ -68,7 +68,7 @@ def main() -> None:
     per_device_batch_size = 2 if args.smoke_test else hardware_cfg["per_device_batch_size"]
     warmup_steps = training_cfg.get("warmup_steps")
     if warmup_steps is None and "warmup_ratio" in training_cfg:
-        warmup_steps = training_cfg["warmup_ratio"]
+        warmup_steps = int(training_cfg["warmup_ratio"] * max_steps)
 
     query_prefix = config["prefixes"]["query"]
     document_prefix = config["prefixes"]["document"]

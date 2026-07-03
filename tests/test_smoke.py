@@ -49,6 +49,13 @@ def test_matryoshka_dims_scalar_config():
     assert matryoshka_dims({"matryoshka_dims": 768}) == [768]
 
 
+def test_build_training_mixture_scalar_matryoshka_dims():
+    config = load_config()
+    config["matryoshka_dims"] = 768
+    mixture = build_training_mixture(config, smoke_test=True)
+    assert set(mixture.keys()) == {"distill", "retrieval", "sts"}
+
+
 def test_mrl_distill_loss_with_teacher_labels():
     model = _DummyModel()
     loss_fn = MRLEmbedDistillLoss(model, matryoshka_dims=768)  # type: ignore[arg-type]
