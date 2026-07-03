@@ -6,7 +6,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sentence_transformers import SentenceTransformer
+from jina_eurobert.device import model_device
 from sentence_transformers.sentence_transformer.losses import (
     CoSENTLoss,
     GlobalOrthogonalRegularizationLoss,
@@ -28,7 +28,7 @@ class MRLEmbedDistillLoss(nn.Module):
 
     def __init__(
         self,
-        model: SentenceTransformer,
+        model: nn.Module,
         matryoshka_dims: list[int],
         matryoshka_weights: list[float] | None = None,
     ) -> None:
@@ -42,7 +42,7 @@ class MRLEmbedDistillLoss(nn.Module):
 
     def forward(self, sentence_features: list[dict[str, torch.Tensor]], labels: torch.Tensor) -> torch.Tensor:
         if labels is None or not torch.is_tensor(labels):
-            return torch.tensor(0.0, device=self.model.device, requires_grad=True)
+            return torch.tensor(0.0, device=model_device(self.model), requires_grad=True)
 
         sentence_features = list(sentence_features)
         embeddings = [self.model(sentence_feature)["sentence_embedding"] for sentence_feature in sentence_features]
@@ -62,7 +62,7 @@ class MRLEmbedDistillLoss(nn.Module):
                 cosine = F.cosine_similarity(student_d, teacher_d, dim=-1)
                 losses.append(weight * (1.0 - cosine).mean())
         if not losses:
-            return torch.tensor(0.0, device=self.model.device, requires_grad=True)
+            return torch.tensor(0.0, device=model_device(self.model), requires_grad=True)
         return torch.stack(losses).sum()
 
 
@@ -77,7 +77,7 @@ class CombinedDistillationLoss(nn.Module):
 
     def __init__(
         self,
-        model: SentenceTransformer,
+        model: nn.Module,
         matryoshka_dims: list[int],
         loss_weights: dict[str, float],
     ) -> None:
@@ -101,7 +101,7 @@ class CombinedDistillationLoss(nn.Module):
 
     def forward(self, sentence_features: list[dict[str, torch.Tensor]], labels: torch.Tensor) -> torch.Tensor:
         batch_type = self._batch_type
-        total = torch.tensor(0.0, device=self.model.device, requires_grad=True)
+        total = torch.tensor(0.0, device=model_device(self.model), requires_grad=True)
 
         if batch_type == "distill":
             if (
