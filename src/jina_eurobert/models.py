@@ -7,6 +7,22 @@ from sentence_transformers.sentence_transformer.modules import Pooling, Transfor
 from transformers import modeling_rope_utils as rope_utils
 
 
+def patch_dataparallel_safe_forward(model: SentenceTransformer) -> SentenceTransformer:
+    """Return only tensor outputs from forward so DataParallel gather_map succeeds.
+
+    SentenceTransformer modules may attach non-tensor metadata (e.g. prompt_length,
+    modality) to the feature dict. DataParallel cannot gather those values across GPUs.
+    """
+    original_forward = model.forward
+
+    def forward(input: dict, **kwargs):  # type: ignore[no-untyped-def]
+        output = original_forward(input, **kwargs)
+        return {"sentence_embedding": output["sentence_embedding"]}
+
+    model.forward = forward  # type: ignore[method-assign]
+    return model
+
+
 def _register_eurobert_default_rope() -> None:
     """EuroBERT custom code uses rope_type='default', which newer transformers omit."""
 
@@ -56,7 +72,7 @@ def build_student_model(
         "document": "Document: ",
     }
     model.default_prompt_name = None
-    return model
+    return patch_dataparallel_safe_forward(model)
 
 
 def build_teacher_model(

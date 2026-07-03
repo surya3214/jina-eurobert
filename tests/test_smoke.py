@@ -81,29 +81,45 @@ def test_model_device_with_data_parallel():
     assert model_device(wrapped) == next(inner.parameters()).device
 
 
+def test_student_forward_is_dataparallel_safe():
+    import torch.nn as nn
+
+    from jina_eurobert.models import build_student_model
+
+    model = build_student_model(device="cpu", dtype=torch.float32)
+    features = model.preprocess(["Query: test sentence"], prompt="Query: ")
+    output = model(features)
+    assert set(output.keys()) == {"sentence_embedding"}
+    assert torch.is_tensor(output["sentence_embedding"])
+
+    dp = nn.DataParallel(model)
+    dp_output = dp(features)
+    assert set(dp_output.keys()) == {"sentence_embedding"}
+    assert torch.is_tensor(dp_output["sentence_embedding"])
+
+
 def test_combined_loss_with_data_parallel_model():
     import torch.nn as nn
 
     from jina_eurobert.device import model_device
+    from jina_eurobert.models import build_student_model
 
-    class _ModuleDummy(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.proj = nn.Linear(1, 1)
-
-        def forward(self, sentence_feature: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-            batch = sentence_feature["input_ids"].shape[0]
-            return {"sentence_embedding": self.proj(torch.zeros(batch, 1)).expand(batch, 768)}
-
-    inner = _ModuleDummy()
-    wrapped = nn.DataParallel(inner)
+    model = build_student_model(device="cpu", dtype=torch.float32)
+    wrapped = nn.DataParallel(model)
     loss_fn = CombinedDistillationLoss(
         model=wrapped,
         matryoshka_dims=[32, 768],
         loss_weights={"distill_mrl": 0.5, "infonce": 0.25, "cosent": 0.15, "gor": 0.1},
     )
+    features = [
+        model.preprocess(["Query: q1", "Query: q2"], prompt="Query: "),
+        model.preprocess(["Document: d1", "Document: d2"], prompt="Document: "),
+    ]
+    labels = torch.randn(2, 2, 768)
     loss_fn.set_batch_type("distill")
-    value = loss_fn([], None)
+    value = loss_fn(features, labels)
+    assert torch.is_tensor(value)
+    assert value.ndim == 0
     assert value.device == model_device(wrapped)
 
 
