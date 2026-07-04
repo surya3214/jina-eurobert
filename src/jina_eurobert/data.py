@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from datasets import Dataset, DatasetDict, concatenate_datasets
+from tqdm import tqdm
 
 from jina_eurobert.config import matryoshka_dims
 from jina_eurobert.hf_datasets import load_hf_split, resolve_datasets_dir
@@ -28,14 +30,31 @@ def teacher_index_key(text: str, prompt_type: str = "document") -> str:
     return f"{text_hash(text)}:{prompt_type}"
 
 
-def load_teacher_embedding_index(embeddings_dir: str | Path) -> dict[str, np.ndarray]:
+def _show_progress(show_progress: bool | None = None) -> bool:
+    if show_progress is not None:
+        return show_progress
+    return os.environ.get("RANK", "0") == "0"
+
+
+def load_teacher_embedding_index(
+    embeddings_dir: str | Path,
+    *,
+    show_progress: bool | None = None,
+) -> dict[str, np.ndarray]:
     """Load parquet shards into a (text-hash, prompt) -> embedding index (prefers dim 768)."""
     embeddings_dir = Path(embeddings_dir)
     if not embeddings_dir.exists():
         return {}
 
     index: dict[str, np.ndarray] = {}
-    for parquet_path in sorted(embeddings_dir.glob("**/*.parquet")):
+    parquet_paths = sorted(embeddings_dir.glob("**/*.parquet"))
+    progress = tqdm(
+        parquet_paths,
+        desc="Loading teacher index",
+        disable=not _show_progress(show_progress),
+        unit="shard",
+    )
+    for parquet_path in progress:
         dataset = Dataset.from_parquet(str(parquet_path))
         for row in dataset:
             text = row.get("text") or row.get("anchor") or row.get("sentence")
@@ -54,6 +73,7 @@ def load_teacher_embedding_index(embeddings_dir: str | Path) -> dict[str, np.nda
                     if col.startswith("embedding_"):
                         index[key] = np.asarray(value, dtype=np.float32)
                         break
+        progress.set_postfix(entries=len(index))
     return index
 
 
@@ -157,6 +177,8 @@ def attach_teacher_embeddings(
     text_columns: list[str],
     teacher_index: dict[str, np.ndarray],
     dim: int = 768,
+    *,
+    show_progress: bool | None = None,
 ) -> Dataset:
     """Add teacher_anchor and teacher_positive embedding columns."""
 
@@ -182,16 +204,28 @@ def attach_teacher_embeddings(
                 row[target_col] = vector.tolist()
         return row
 
-    return dataset.map(_map_row)
+    return dataset.map(
+        _map_row,
+        desc="Attaching teacher embeddings",
+        disable=not _show_progress(show_progress),
+    )
 
 
 def prepare_distill_dataset(
     dataset: Dataset,
     teacher_index: dict[str, np.ndarray],
     teacher_dim: int = 768,
+    *,
+    show_progress: bool | None = None,
 ) -> Dataset:
     if teacher_index:
-        dataset = attach_teacher_embeddings(dataset, ["anchor", "positive"], teacher_index, teacher_dim)
+        dataset = attach_teacher_embeddings(
+            dataset,
+            ["anchor", "positive"],
+            teacher_index,
+            teacher_dim,
+            show_progress=show_progress,
+        )
     else:
         dataset = dataset.add_column("teacher_anchor", [_zero_teacher(teacher_dim)] * len(dataset))
         dataset = dataset.add_column("teacher_positive", [_zero_teacher(teacher_dim)] * len(dataset))
@@ -244,11 +278,14 @@ def build_training_mixture(
     max_samples_per_source: int | None = 5000,
     smoke_test: bool = False,
     datasets_dir: str | Path | None = None,
+    *,
+    show_progress: bool | None = None,
 ) -> DatasetDict:
     """Build per-task datasets for homogeneous batches (distill / retrieval / sts)."""
     teacher_index = teacher_index or {}
     teacher_dim = max(matryoshka_dims(config))
     seed = config.get("training", {}).get("seed", 42)
+    progress_enabled = _show_progress(show_progress)
 
     if smoke_test:
         return _smoke_test_datasets(teacher_dim)
@@ -258,6 +295,8 @@ def build_training_mixture(
     distill_sets: list[Dataset] = []
     for name in _as_list(config.get("data", {}).get("pair_datasets")):
         try:
+            if progress_enabled:
+                print(f"Loading pair dataset {name}...", flush=True)
             if "gooaq" in name:
                 dataset = load_gooaq_pair_dataset(
                     max_samples=max_samples_per_source,
@@ -272,13 +311,19 @@ def build_training_mixture(
                 )
             else:
                 continue
-            distill_sets.append(prepare_distill_dataset(dataset, teacher_index, teacher_dim))
+            if progress_enabled:
+                print(f"Preparing distill split from {name} ({len(dataset):,} rows)...", flush=True)
+            distill_sets.append(
+                prepare_distill_dataset(dataset, teacher_index, teacher_dim, show_progress=show_progress)
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"Skipping pair dataset {name}: {exc}")
 
     retrieval_sets: list[Dataset] = []
     for name in _as_list(config.get("data", {}).get("triplet_datasets")):
         try:
+            if progress_enabled:
+                print(f"Loading triplet dataset {name}...", flush=True)
             if "msmarco" in name:
                 triplets = load_msmarco_triplet_dataset(
                     max_samples=max_samples_per_source,
@@ -286,12 +331,16 @@ def build_training_mixture(
                     config=config,
                 )
                 retrieval_sets.append(prepare_retrieval_dataset(triplets))
+                if progress_enabled:
+                    print(f"Loaded retrieval split from {name} ({len(triplets):,} rows).", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"Skipping triplet dataset {name}: {exc}")
 
     sts_sets: list[Dataset] = []
     for name in _as_list(config.get("data", {}).get("sts_datasets")):
         try:
+            if progress_enabled:
+                print(f"Loading STS dataset {name}...", flush=True)
             if "stsb" in name:
                 stsb = load_stsb_dataset(
                     max_samples=max_samples_per_source,
@@ -299,6 +348,8 @@ def build_training_mixture(
                     config=config,
                 )
                 sts_sets.append(prepare_sts_dataset(stsb))
+                if progress_enabled:
+                    print(f"Loaded STS split from {name} ({len(stsb):,} rows).", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"Skipping STS dataset {name}: {exc}")
 

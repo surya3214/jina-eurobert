@@ -31,11 +31,20 @@ def init_distributed() -> tuple[int, int, int]:
     return 0, 1, 0
 
 
-def unique_texts_with_prompts(datasets: list[Dataset]) -> list[tuple[str, str]]:
+def unique_texts_with_prompts(
+    datasets: list[Dataset],
+    *,
+    show_progress: bool = True,
+) -> list[tuple[str, str]]:
     """Return unique (text, prompt_type) pairs for query anchors and document positives."""
     pairs: set[tuple[str, str]] = set()
     for dataset in datasets:
-        for row in dataset:
+        for row in tqdm(
+            dataset,
+            desc="Collecting unique texts",
+            disable=not show_progress,
+            unit="row",
+        ):
             pairs.add((row["anchor"], "query"))
             pairs.add((row["positive"], "document"))
     return sorted(pairs)
@@ -139,10 +148,16 @@ def main() -> None:
 
     teacher_cfg = config["teacher"]
     pair_sets = []
+    if rank == 0:
+        print("Loading pair datasets for teacher precompute...", flush=True)
     try:
+        if rank == 0:
+            print("Loading sentence-transformers/gooaq...", flush=True)
         pair_sets.append(
             load_gooaq_pair_dataset(max_samples=args.max_samples, datasets_dir=datasets_dir, config=config)
         )
+        if rank == 0:
+            print("Loading sentence-transformers/natural-questions...", flush=True)
         pair_sets.append(
             load_nq_pair_dataset(max_samples=args.max_samples, datasets_dir=datasets_dir, config=config)
         )
@@ -152,7 +167,11 @@ def main() -> None:
         distill = build_training_mixture(config, smoke_test=True)["distill"]
         pair_sets.append(distill)
 
-    items = unique_texts_with_prompts(pair_sets)
+    if rank == 0:
+        print("Collecting unique texts for teacher encoding...", flush=True)
+    items = unique_texts_with_prompts(pair_sets, show_progress=rank == 0)
+    if rank == 0:
+        print(f"Encoding {len(items):,} unique (text, prompt) pairs...", flush=True)
     teacher = build_teacher_model(
         model_name=teacher_cfg["model"],
         max_seq_length=teacher_cfg["max_seq_length"],
