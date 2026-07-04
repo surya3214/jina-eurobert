@@ -43,6 +43,8 @@ def main() -> None:
         manifest = read_manifest(manifest_path_for(datasets_dir))
         print(f"Using local datasets from {datasets_dir} ({len(manifest)} repos in manifest)")
 
+    if os.environ.get("RANK", "0") == "0":
+        print("Loading teacher embedding index...", flush=True)
     teacher_index = load_teacher_embedding_index(config["data"]["teacher_embeddings_dir"])
     if os.environ.get("RANK", "0") == "0":
         if teacher_index:
@@ -50,6 +52,8 @@ def main() -> None:
         else:
             print("Loaded 0 teacher embeddings from index.")
 
+    if os.environ.get("RANK", "0") == "0":
+        print("Building training mixture...", flush=True)
     train_dataset = build_training_mixture(
         config,
         teacher_index=teacher_index,
@@ -64,6 +68,8 @@ def main() -> None:
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if hardware_cfg.get("bf16", True) and torch.cuda.is_available() else torch.float32
 
+    if os.environ.get("RANK", "0") == "0":
+        print("Loading student model...", flush=True)
     model = build_student_model(
         model_name=student_cfg["model"],
         max_seq_length=student_cfg["max_seq_length"],
