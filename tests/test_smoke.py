@@ -272,3 +272,34 @@ def test_summarize_training_mixture():
         }
     )
     assert summarize_training_mixture(mixture) == {"distill": 1, "retrieval": 2}
+
+
+def test_prepare_sts_dataset_normalizes_scores():
+    from datasets import Dataset
+
+    from jina_eurobert.data import prepare_sts_dataset
+
+    dataset = Dataset.from_dict({"anchor": ["a"], "positive": ["b"], "score": [4.0]})
+    prepared = prepare_sts_dataset(dataset)
+    assert prepared[0]["score"] == 0.8
+
+
+def test_combined_loss_finite_on_student_model():
+    from jina_eurobert.config import load_config, matryoshka_dims
+    from jina_eurobert.models import build_student_model
+
+    model = build_student_model(device="cpu", dtype=torch.float32)
+    model.eval()
+    loss_fn = CombinedDistillationLoss(
+        model=model,
+        matryoshka_dims=matryoshka_dims(load_config()),
+        loss_weights=load_config()["loss_weights"],
+    )
+    features = [
+        model.preprocess(["Query: q1", "Query: q2"], prompt="Query: "),
+        model.preprocess(["Document: d1", "Document: d2"], prompt="Document: "),
+    ]
+    loss_fn.set_batch_type("sts")
+    value = loss_fn(features, torch.tensor([4.0, 3.0]))
+    assert torch.isfinite(value).item()
+    assert 0.0 <= float(value) <= 2.0
