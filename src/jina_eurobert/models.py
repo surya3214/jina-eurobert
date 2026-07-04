@@ -64,6 +64,7 @@ def build_student_model(
     pooling = Pooling(
         transformer.get_embedding_dimension(),
         pooling_mode="lasttoken",
+        include_prompt=False,
     )
     model = SentenceTransformer(modules=[transformer, pooling], device=device)
     model.max_seq_length = max_seq_length
