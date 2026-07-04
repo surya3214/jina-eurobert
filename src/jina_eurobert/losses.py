@@ -15,11 +15,29 @@ from sentence_transformers.sentence_transformer.losses import (
 )
 
 
-MODEL_FEATURE_KEYS = frozenset({"input_ids", "attention_mask", "token_type_ids"})
+MODEL_FEATURE_KEYS = frozenset({"input_ids", "attention_mask", "token_type_ids", "prompt_length"})
 
 
-def _model_feature_inputs(features: dict[str, Any]) -> dict[str, torch.Tensor]:
-    return {key: value for key, value in features.items() if key in MODEL_FEATURE_KEYS and torch.is_tensor(value)}
+def _model_feature_inputs(features: dict[str, Any]) -> dict[str, Any]:
+    model_inputs: dict[str, Any] = {}
+    for key, value in features.items():
+        if key not in MODEL_FEATURE_KEYS:
+            continue
+        if torch.is_tensor(value):
+            model_inputs[key] = value
+        elif key == "prompt_length" and value is not None:
+            model_inputs[key] = value
+    return model_inputs
+
+
+def _clone_model_inputs(model_inputs: dict[str, Any]) -> dict[str, Any]:
+    cloned: dict[str, Any] = {}
+    for key, value in model_inputs.items():
+        if torch.is_tensor(value):
+            cloned[key] = value.clone()
+        else:
+            cloned[key] = value
+    return cloned
 
 
 def _feature_labels(features: dict[str, torch.Tensor], key: str) -> torch.Tensor | None:
@@ -48,12 +66,18 @@ def _normalize_sts_labels(labels: torch.Tensor) -> torch.Tensor:
     return labels.clamp(0.0, 1.0)
 
 
-def _embeddings_from_features(model: nn.Module, sentence_features: list[dict[str, torch.Tensor]]) -> list[torch.Tensor]:
+def _embedding_forward_context(model: nn.Module) -> Any:
     device = model_device(model)
+    if device.type == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
+
+
+def _embeddings_from_features(model: nn.Module, sentence_features: list[dict[str, torch.Tensor]]) -> list[torch.Tensor]:
     embeddings: list[torch.Tensor] = []
-    with _loss_fp32_context(device):
+    with _embedding_forward_context(model):
         for sentence_feature in sentence_features:
-            model_inputs = _model_feature_inputs(sentence_feature)
+            model_inputs = _clone_model_inputs(_model_feature_inputs(sentence_feature))
             if "sentence_embedding" in sentence_feature and not model_inputs:
                 embedding = sentence_feature["sentence_embedding"].float()
             else:
@@ -103,26 +127,28 @@ class MRLEmbedDistillLoss(nn.Module):
         embeddings = _embeddings_from_features(self.model, list(sentence_features))
         labels = labels.float()
 
-        losses: list[torch.Tensor] = []
-        for col_idx, student in enumerate(embeddings):
-            if labels.dim() == 3:
-                teacher = labels[:, col_idx, :].to(student.device)
-            elif labels.dim() == 2 and len(embeddings) == 1:
-                teacher = labels.to(student.device)
-            else:
-                teacher = labels[:, col_idx, :].to(student.device)
+        device = model_device(self.model)
+        with _loss_fp32_context(device):
+            losses: list[torch.Tensor] = []
+            for col_idx, student in enumerate(embeddings):
+                if labels.dim() == 3:
+                    teacher = labels[:, col_idx, :].to(student.device)
+                elif labels.dim() == 2 and len(embeddings) == 1:
+                    teacher = labels.to(student.device)
+                else:
+                    teacher = labels[:, col_idx, :].to(student.device)
 
-            for dim, weight in zip(self.matryoshka_dims, self.matryoshka_weights, strict=True):
-                student_d = F.normalize(student[..., :dim], p=2, dim=-1)
-                teacher_d = teacher[..., :dim]
-                teacher_norm = teacher_d.norm(p=2, dim=-1, keepdim=True)
-                valid = teacher_norm.squeeze(-1) > 1e-6
-                if not valid.any():
-                    continue
-                teacher_d = teacher_d / teacher_norm.clamp(min=1e-12)
-                cosine = F.cosine_similarity(student_d, teacher_d, dim=-1)
-                cosine = cosine[valid]
-                losses.append(weight * (1.0 - cosine).mean())
+                for dim, weight in zip(self.matryoshka_dims, self.matryoshka_weights, strict=True):
+                    student_d = F.normalize(student[..., :dim], p=2, dim=-1)
+                    teacher_d = teacher[..., :dim]
+                    teacher_norm = teacher_d.norm(p=2, dim=-1, keepdim=True)
+                    valid = teacher_norm.squeeze(-1) > 1e-6
+                    if not valid.any():
+                        continue
+                    teacher_d = teacher_d / teacher_norm.clamp(min=1e-12)
+                    cosine = F.cosine_similarity(student_d, teacher_d, dim=-1)
+                    cosine = cosine[valid]
+                    losses.append(weight * (1.0 - cosine).mean())
         if not losses:
             raise ValueError(
                 "No valid teacher embeddings in distill batch (all zero vectors). "
@@ -176,7 +202,6 @@ class CombinedDistillationLoss(nn.Module):
             raise TypeError(
                 f"Expected sentence_features to be a list of feature dicts, got {type(sentence_features).__name__}"
             )
-        sentence_features = [_model_feature_inputs(feature) for feature in sentence_features]
         terms: list[torch.Tensor] = []
 
         if batch_type == "distill":
@@ -196,13 +221,15 @@ class CombinedDistillationLoss(nn.Module):
                 )
         elif batch_type == "retrieval":
             embeddings = _embeddings_from_features(self.model, sentence_features)
-            infonce_term = self.loss_weights["infonce"] * self.infonce_loss.compute_loss_from_embeddings(
-                embeddings, labels
-            )
+            with _loss_fp32_context(model_device(self.model)):
+                infonce_term = self.loss_weights["infonce"] * self.infonce_loss.compute_loss_from_embeddings(
+                    embeddings, labels
+                )
             terms.append(_ensure_finite(infonce_term, "infonce"))
             self.last_loss_terms["infonce"] = float(infonce_term.detach())
 
-            gor_output = self.gor_loss.compute_loss_from_embeddings(embeddings, labels)
+            with _loss_fp32_context(model_device(self.model)):
+                gor_output = self.gor_loss.compute_loss_from_embeddings(embeddings, labels)
             gor_term = self.loss_weights["gor"] * _scalar_loss(gor_output)
             terms.append(_ensure_finite(gor_term, "gor"))
             self.last_loss_terms["gor"] = float(gor_term.detach())
@@ -211,9 +238,10 @@ class CombinedDistillationLoss(nn.Module):
                 raise ValueError("STS batch is missing score labels.")
             sts_labels = _normalize_sts_labels(labels)
             embeddings = _embeddings_from_features(self.model, sentence_features)
-            sts_term = self.loss_weights["cosent"] * self.sts_loss.compute_loss_from_embeddings(
-                embeddings, sts_labels
-            )
+            with _loss_fp32_context(model_device(self.model)):
+                sts_term = self.loss_weights["cosent"] * self.sts_loss.compute_loss_from_embeddings(
+                    embeddings, sts_labels
+                )
             terms.append(_ensure_finite(sts_term, "sts"))
             self.last_loss_terms["sts"] = float(sts_term.detach())
         else:

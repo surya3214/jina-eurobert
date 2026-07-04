@@ -284,6 +284,35 @@ def test_prepare_sts_dataset_normalizes_scores():
     assert prepared[0]["score"] == 0.8
 
 
+def test_model_feature_inputs_keeps_prompt_length():
+    from jina_eurobert.losses import _model_feature_inputs
+
+    features = {
+        "input_ids": torch.tensor([[1, 2, 3]]),
+        "attention_mask": torch.tensor([[1, 1, 1]]),
+        "prompt_length": 3,
+        "modality": "text",
+    }
+    model_inputs = _model_feature_inputs(features)
+    assert model_inputs["prompt_length"] == 3
+    assert set(model_inputs.keys()) == {"input_ids", "attention_mask", "prompt_length"}
+
+
+def test_embeddings_from_features_is_immutable_across_calls():
+    from jina_eurobert.losses import _embeddings_from_features
+    from jina_eurobert.models import build_student_model
+
+    model = build_student_model(device="cpu", dtype=torch.float32)
+    model.eval()
+    features = [model.preprocess(["Query: topic 0", "Query: topic 1"], prompt="Query: ")]
+    before = set(features[0].keys())
+    _embeddings_from_features(model, features)
+    _embeddings_from_features(model, features)
+    assert set(features[0].keys()) == before
+    assert "token_embeddings" not in features[0]
+    assert "sentence_embedding" not in features[0]
+
+
 def test_combined_loss_finite_on_student_model():
     from jina_eurobert.config import load_config, matryoshka_dims
     from jina_eurobert.models import build_student_model
