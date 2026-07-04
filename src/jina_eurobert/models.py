@@ -9,7 +9,10 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.sentence_transformer.modules import Pooling, Transformer
+from sentence_transformers.util import batch_to_device
 from transformers import AutoModel, modeling_rope_utils as rope_utils
+
+from jina_eurobert.device import model_device
 
 
 def patch_dataparallel_safe_forward(model: SentenceTransformer) -> SentenceTransformer:
@@ -139,8 +142,10 @@ def _reload_eurobert_pretrained_weights(
 
 def _student_forward_smoke_test(model: SentenceTransformer) -> None:
     model.eval()
+    device = model_device(model)
     with torch.no_grad():
         features = model.preprocess(["Query: weight check"], prompt="Query: ")
+        features = batch_to_device(features, device)
         embeddings = model(features)["sentence_embedding"]
     if not torch.isfinite(embeddings).all():
         raise FloatingPointError("EuroBERT student model produced non-finite embeddings after weight load.")
