@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import torch
-from jina_eurobert.device import normalize_dataset_name
+from jina_eurobert.device import infer_dataset_name, normalize_dataset_name
 from sentence_transformers.base.data_collator import BaseDataCollator
 
 TEACHER_COLUMNS = frozenset({"teacher_anchor", "teacher_positive"})
@@ -20,10 +20,13 @@ class DistillationDataCollator(BaseDataCollator):
         if not features:
             return {}
 
-        dataset_name = normalize_dataset_name(features[0].get("dataset_name", "distill"))
-        extras: dict[str, Any] = {}
+        dataset_names = [infer_dataset_name(row) for row in features]
+        batch_dataset = dataset_names[0]
+        if len(set(dataset_names)) != 1:
+            raise ValueError(f"Mixed dataset types in one batch: {sorted(set(dataset_names))}")
 
-        if "teacher_anchor" in features[0]:
+        extras: dict[str, Any] = {}
+        if batch_dataset == "distill" and all("teacher_anchor" in row for row in features):
             extras["teacher_anchor"] = torch.tensor(
                 [row["teacher_anchor"] for row in features],
                 dtype=torch.float32,
@@ -34,9 +37,9 @@ class DistillationDataCollator(BaseDataCollator):
             )
 
         token_rows: list[dict[str, Any]] = []
-        for row in features:
+        for row, dataset_name in zip(features, dataset_names, strict=True):
             token_row: dict[str, Any] = {
-                "dataset_name": normalize_dataset_name(row.get("dataset_name", dataset_name)),
+                "dataset_name": normalize_dataset_name(dataset_name),
                 "anchor": row["anchor"],
                 "positive": row["positive"],
             }

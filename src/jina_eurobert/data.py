@@ -61,6 +61,12 @@ def _zero_teacher(dim: int) -> list[float]:
     return [0.0] * dim
 
 
+def _unit_teacher(dim: int, index: int = 0) -> list[float]:
+    vector = [0.0] * dim
+    vector[index % dim] = 1.0
+    return vector
+
+
 def _normalize_pair_dataset(dataset: Dataset, anchor_col: str, positive_col: str) -> Dataset:
     return dataset.rename_columns({anchor_col: "anchor", positive_col: "positive"}).select_columns(
         ["anchor", "positive"]
@@ -203,7 +209,6 @@ def prepare_sts_dataset(dataset: Dataset) -> Dataset:
 
 
 def _smoke_test_datasets(teacher_dim: int) -> DatasetDict:
-    zero = _zero_teacher(teacher_dim)
     n = 8
     return DatasetDict(
         {
@@ -211,8 +216,8 @@ def _smoke_test_datasets(teacher_dim: int) -> DatasetDict:
                 {
                     "anchor": [f"What is city {i}?" for i in range(n)],
                     "positive": [f"City {i} is a European capital." for i in range(n)],
-                    "teacher_anchor": [zero] * n,
-                    "teacher_positive": [zero] * n,
+                    "teacher_anchor": [_unit_teacher(teacher_dim, i) for i in range(n)],
+                    "teacher_positive": [_unit_teacher(teacher_dim, i + 1) for i in range(n)],
                 }
             ),
             "retrieval": Dataset.from_dict(
@@ -309,6 +314,26 @@ def build_training_mixture(
         return _smoke_test_datasets(teacher_dim)
 
     return DatasetDict(datasets)
+
+
+def summarize_training_mixture(dataset: DatasetDict) -> dict[str, int]:
+    return {name: len(ds) for name, ds in dataset.items()}
+
+
+def log_training_mixture(dataset: DatasetDict, *, teacher_index_size: int = 0) -> None:
+    sizes = summarize_training_mixture(dataset)
+    total = sum(sizes.values())
+    print("Training mixture sizes:")
+    for name, count in sizes.items():
+        print(f"  {name}: {count:,}")
+    print(f"  total: {total:,}")
+    if teacher_index_size == 0:
+        print(
+            "WARNING: No teacher embeddings loaded. Distill batches will use zero teacher "
+            "vectors and the MRL distillation signal will be weak."
+        )
+    else:
+        print(f"Teacher embedding index: {teacher_index_size:,} (text, prompt) entries")
 
 
 def save_dataset_manifest(dataset: Dataset | DatasetDict, path: str | Path) -> None:
