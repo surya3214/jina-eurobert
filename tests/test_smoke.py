@@ -88,6 +88,19 @@ def test_model_device_with_data_parallel():
     assert model_device(wrapped) == next(inner.parameters()).device
 
 
+def test_student_model_loads_pretrained_weights():
+    from safetensors.torch import load_file
+    from huggingface_hub import hf_hub_download
+
+    from jina_eurobert.models import build_student_model
+
+    model = build_student_model(device="cpu", dtype=torch.float32)
+    state = load_file(hf_hub_download("EuroBERT/EuroBERT-210m", "model.safetensors"))
+    key = "model.layers.0.self_attn.q_proj.weight"
+    loaded = model[0].auto_model.state_dict()["layers.0.self_attn.q_proj.weight"]
+    assert torch.allclose(loaded.float(), state[key].float())
+
+
 def test_student_forward_is_dataparallel_safe():
     import torch.nn as nn
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.sentence_transformer.modules import Pooling, Transformer
-from transformers import modeling_rope_utils as rope_utils
+from transformers import AutoModel, modeling_rope_utils as rope_utils
 
 
 def patch_dataparallel_safe_forward(model: SentenceTransformer) -> SentenceTransformer:
@@ -29,15 +31,68 @@ def _register_eurobert_default_rope() -> None:
     if "default" in rope_utils.ROPE_INIT_FUNCTIONS:
         return
 
-    def _compute_default_rope_parameters(config, device=None, seq_len=None):  # noqa: ARG001
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
-        rope_theta = getattr(config, "rope_theta", 250000.0)
-        inv_freq = 1.0 / (
-            rope_theta ** (torch.arange(0, head_dim, 2, device=device, dtype=torch.float32) / head_dim)
-        )
-        return inv_freq, 1.0
+    # Transformers 5.x renamed the base RoPE initializer to "proportional".
+    rope_utils.ROPE_INIT_FUNCTIONS["default"] = rope_utils.ROPE_INIT_FUNCTIONS["proportional"]
 
-    rope_utils.ROPE_INIT_FUNCTIONS["default"] = _compute_default_rope_parameters
+
+def _eurobert_checkpoint_state_dict(model_name: str) -> dict[str, torch.Tensor]:
+    checkpoint_path = hf_hub_download(model_name, "model.safetensors")
+    state = load_file(checkpoint_path)
+    return {key.removeprefix("model."): value for key, value in state.items() if key.startswith("model.")}
+
+
+def _reload_eurobert_pretrained_weights(
+    transformer: Transformer,
+    model_name: str,
+    *,
+    dtype: torch.dtype | None,
+    attn_implementation: str,
+) -> None:
+    """Rebuild EuroBERT with config-init + checkpoint weights.
+
+    Transformers 5.5 can leave randomly initialized weights (and bad RoPE state)
+    after ``from_pretrained`` for EuroBERT. Building from config and loading the
+    safetensors checkpoint avoids that corruption.
+    """
+    model_kwargs: dict = {
+        "trust_remote_code": True,
+        "attn_implementation": attn_implementation,
+    }
+    if dtype is not None:
+        model_kwargs["torch_dtype"] = dtype
+
+    auto_model = AutoModel.from_config(transformer.config, **model_kwargs)
+    state_dict = _eurobert_checkpoint_state_dict(model_name)
+    missing, unexpected = auto_model.load_state_dict(state_dict, strict=False)
+    if missing:
+        raise RuntimeError(
+            "Failed to load EuroBERT pretrained weights; "
+            f"missing {len(missing)} parameter(s), e.g. {missing[:3]}"
+        )
+    if unexpected:
+        raise RuntimeError(
+            "Failed to load EuroBERT pretrained weights; "
+            f"unexpected {len(unexpected)} parameter(s), e.g. {unexpected[:3]}"
+        )
+
+    reference_key = "layers.0.self_attn.q_proj.weight"
+    if reference_key not in state_dict:
+        raise RuntimeError(f"EuroBERT checkpoint is missing expected weight {reference_key!r}.")
+    loaded = auto_model.state_dict()[reference_key]
+    expected = state_dict[reference_key].to(device=loaded.device, dtype=loaded.dtype)
+    if not torch.allclose(loaded, expected):
+        raise RuntimeError("EuroBERT pretrained weights were not applied to the student model.")
+
+    transformer.model = auto_model
+
+
+def _student_forward_smoke_test(model: SentenceTransformer) -> None:
+    model.eval()
+    with torch.no_grad():
+        features = model.preprocess(["Query: weight check"], prompt="Query: ")
+        embeddings = model(features)["sentence_embedding"]
+    if not torch.isfinite(embeddings).all():
+        raise FloatingPointError("EuroBERT student model produced non-finite embeddings after weight load.")
 
 
 def build_student_model(
@@ -50,7 +105,12 @@ def build_student_model(
     """Build EuroBERT student with last-token pooling and Query/Document prefixes."""
     _register_eurobert_default_rope()
 
-    model_kwargs: dict = {"trust_remote_code": trust_remote_code}
+    use_cuda = device is not None and str(device).startswith("cuda")
+    attn_implementation = "sdpa" if use_cuda else "eager"
+    model_kwargs: dict = {
+        "trust_remote_code": trust_remote_code,
+        "attn_implementation": attn_implementation,
+    }
     if dtype is not None:
         model_kwargs["torch_dtype"] = dtype
 
@@ -61,12 +121,21 @@ def build_student_model(
         config_kwargs={"trust_remote_code": trust_remote_code},
         processor_kwargs={"trust_remote_code": trust_remote_code},
     )
+    _reload_eurobert_pretrained_weights(
+        transformer,
+        model_name,
+        dtype=dtype,
+        attn_implementation=attn_implementation,
+    )
     pooling = Pooling(
         transformer.get_embedding_dimension(),
         pooling_mode="lasttoken",
         include_prompt=False,
     )
     model = SentenceTransformer(modules=[transformer, pooling], device=device)
+    if device is not None:
+        model.to(device)
+    _student_forward_smoke_test(model)
     model.max_seq_length = max_seq_length
     model.prompts = {
         "query": "Query: ",
