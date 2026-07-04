@@ -26,3 +26,17 @@ def normalize_dataset_name(dataset_name: Any) -> str:
     if torch.is_tensor(dataset_name):
         dataset_name = dataset_name.reshape(-1)[0].item()
     return str(dataset_name)
+
+
+def infer_dataset_name(row: dict[str, Any]) -> str:
+    """Infer routing key when the lazy dataset_name transform is not applied yet."""
+    name = row.get("dataset_name")
+    if name:
+        return normalize_dataset_name(name)
+    if row.get("teacher_anchor") is not None:
+        return "distill"
+    if row.get("negative"):
+        return "retrieval"
+    if "score" in row or "label" in row:
+        return "sts"
+    return "distill"

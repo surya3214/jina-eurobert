@@ -41,6 +41,31 @@ Point training/eval at the local cache via config (`data.datasets_dir`), CLI (`-
 export JINA_EUROBERT_DATASETS_DIR=data/hf_datasets
 ```
 
+### Check training mixture size
+
+Training also prints per-split row counts at startup. To inspect sizes without launching training:
+
+```bash
+PYTHONPATH=src:scripts python3 -c "
+from jina_eurobert.config import load_config
+from jina_eurobert.data import build_training_mixture, load_teacher_embedding_index, summarize_training_mixture
+config = load_config()
+idx = load_teacher_embedding_index(config['data']['teacher_embeddings_dir'])
+mix = build_training_mixture(config, teacher_index=idx, max_samples_per_source=5000)
+print(summarize_training_mixture(mix))
+print('teacher_index=', len(idx))
+"
+```
+
+Example output:
+
+```
+{'distill': 15000, 'retrieval': 10000, 'sts': 5749}
+teacher_index= 25000
+```
+
+If counts are very small (e.g. 8 per split), datasets were not found locally — run `download_datasets.py` first.
+
 ## 1. Precompute teacher MRL embeddings
 
 ```bash

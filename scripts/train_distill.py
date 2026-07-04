@@ -12,7 +12,7 @@ from sentence_transformers.sentence_transformer.training_args import SentenceTra
 
 from jina_eurobert.collators import DistillationDataCollator
 from jina_eurobert.config import load_config, matryoshka_dims
-from jina_eurobert.data import build_training_mixture, load_teacher_embedding_index
+from jina_eurobert.data import build_training_mixture, load_teacher_embedding_index, log_training_mixture
 from jina_eurobert.datasets_registry import manifest_path_for, read_manifest
 from jina_eurobert.hf_datasets import resolve_datasets_dir
 from jina_eurobert.losses import CombinedDistillationLoss
@@ -44,8 +44,11 @@ def main() -> None:
         print(f"Using local datasets from {datasets_dir} ({len(manifest)} repos in manifest)")
 
     teacher_index = load_teacher_embedding_index(config["data"]["teacher_embeddings_dir"])
-    if teacher_index and os.environ.get("RANK", "0") == "0":
-        print(f"Loaded {len(teacher_index)} teacher embeddings from index.")
+    if os.environ.get("RANK", "0") == "0":
+        if teacher_index:
+            print(f"Loaded {len(teacher_index)} teacher embeddings from index.")
+        else:
+            print("Loaded 0 teacher embeddings from index.")
 
     train_dataset = build_training_mixture(
         config,
@@ -54,6 +57,8 @@ def main() -> None:
         smoke_test=args.smoke_test,
         datasets_dir=datasets_dir,
     )
+    if os.environ.get("RANK", "0") == "0":
+        log_training_mixture(train_dataset, teacher_index_size=len(teacher_index))
 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"

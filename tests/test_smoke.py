@@ -230,3 +230,45 @@ def test_mteb_dataset_collection():
     datasets = collect_mteb_datasets(["MTEB(eng, v2)"])
     assert datasets
     assert all(repo_id.startswith("mteb/") for repo_id in datasets)
+
+
+def test_collator_infers_dataset_name_without_lazy_column():
+    from jina_eurobert.collators import DistillationDataCollator
+    from jina_eurobert.device import infer_dataset_name
+
+    assert infer_dataset_name({"anchor": "a", "positive": "b", "negative": "c"}) == "retrieval"
+    assert infer_dataset_name({"anchor": "a", "positive": "b", "score": 3.5}) == "sts"
+    assert infer_dataset_name({"anchor": "a", "positive": "b", "teacher_anchor": [1.0]}) == "distill"
+
+    class DummyPreprocess:
+        def __call__(self, inputs, prompt=None, task=None):
+            batch_size = len(inputs)
+            return {
+                "input_ids": [[1, 2]] * batch_size,
+                "attention_mask": [[1, 1]] * batch_size,
+            }
+
+    collator = DistillationDataCollator(preprocess_fn=DummyPreprocess(), prompts={})
+    batch = collator(
+        [
+            {"anchor": "q", "positive": "d", "negative": "n"},
+            {"anchor": "q2", "positive": "d2", "negative": "n2"},
+        ]
+    )
+    assert batch["dataset_name"] == "retrieval"
+    assert "negative_input_ids" in batch
+    assert "label" not in batch
+
+
+def test_summarize_training_mixture():
+    from datasets import Dataset, DatasetDict
+
+    from jina_eurobert.data import summarize_training_mixture
+
+    mixture = DatasetDict(
+        {
+            "distill": Dataset.from_dict({"anchor": ["a"], "positive": ["b"]}),
+            "retrieval": Dataset.from_dict({"anchor": ["a", "b"], "positive": ["c", "d"]}),
+        }
+    )
+    assert summarize_training_mixture(mixture) == {"distill": 1, "retrieval": 2}
