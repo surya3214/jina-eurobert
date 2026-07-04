@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from contextlib import nullcontext
 from typing import Any
 
 import torch
@@ -8,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from jina_eurobert.device import model_device
 from sentence_transformers.sentence_transformer.losses import (
-    CoSENTLoss,
+    CosineSimilarityLoss,
     GlobalOrthogonalRegularizationLoss,
     MultipleNegativesRankingLoss,
 )
@@ -28,6 +29,45 @@ def _feature_labels(features: dict[str, torch.Tensor], key: str) -> torch.Tensor
     if not torch.is_tensor(value):
         value = torch.tensor(value, device=features["sentence_embedding"].device)
     return value
+
+
+def _loss_fp32_context(device: torch.device) -> Any:
+    if device.type == "cuda":
+        return torch.autocast(device_type="cuda", enabled=False)
+    return nullcontext()
+
+
+def _normalize_sts_labels(labels: torch.Tensor) -> torch.Tensor:
+    labels = labels.float()
+    if labels.numel() == 0:
+        return labels
+    if labels.dim() != 1:
+        raise ValueError(f"STS labels must be a 1D score tensor, got shape {tuple(labels.shape)}")
+    if float(labels.max()) > 1.0:
+        labels = labels / 5.0
+    return labels.clamp(0.0, 1.0)
+
+
+def _embeddings_from_features(model: nn.Module, sentence_features: list[dict[str, torch.Tensor]]) -> list[torch.Tensor]:
+    device = model_device(model)
+    embeddings: list[torch.Tensor] = []
+    with _loss_fp32_context(device):
+        for sentence_feature in sentence_features:
+            model_inputs = _model_feature_inputs(sentence_feature)
+            if "sentence_embedding" in sentence_feature and not model_inputs:
+                embedding = sentence_feature["sentence_embedding"].float()
+            else:
+                embedding = model(model_inputs)["sentence_embedding"].float()
+            if not torch.isfinite(embedding).all():
+                raise FloatingPointError("Model produced non-finite sentence embeddings for the current batch.")
+            embeddings.append(embedding)
+    return embeddings
+
+
+def _ensure_finite(loss: torch.Tensor, term_name: str) -> torch.Tensor:
+    if not torch.isfinite(loss).all():
+        raise FloatingPointError(f"Non-finite {term_name} loss.")
+    return loss
 
 
 class MRLEmbedDistillLoss(nn.Module):
@@ -59,8 +99,9 @@ class MRLEmbedDistillLoss(nn.Module):
             raise TypeError(
                 f"Expected sentence_features to be a list of feature dicts, got {type(sentence_features).__name__}"
             )
-        sentence_features = [_model_feature_inputs(feature) for feature in sentence_features]
-        embeddings = [self.model(sentence_feature)["sentence_embedding"] for sentence_feature in sentence_features]
+
+        embeddings = _embeddings_from_features(self.model, list(sentence_features))
+        labels = labels.float()
 
         losses: list[torch.Tensor] = []
         for col_idx, student in enumerate(embeddings):
@@ -97,7 +138,7 @@ def _scalar_loss(output: torch.Tensor | dict[str, torch.Tensor]) -> torch.Tensor
 
 
 class CombinedDistillationLoss(nn.Module):
-    """Multi-objective loss: MRL distill + InfoNCE + CoSENT + GOR with batch routing."""
+    """Multi-objective loss: MRL distill + InfoNCE + STS cosine + GOR with batch routing."""
 
     def __init__(
         self,
@@ -110,9 +151,11 @@ class CombinedDistillationLoss(nn.Module):
         self.loss_weights = loss_weights
         self.distill_loss = MRLEmbedDistillLoss(model, matryoshka_dims)
         self.infonce_loss = MultipleNegativesRankingLoss(model, scale=20.0)
-        self.cosent_loss = CoSENTLoss(model)
+        self.sts_loss = CosineSimilarityLoss(model)
         self.gor_loss = GlobalOrthogonalRegularizationLoss(model, mean_weight=0.0)
         self._batch_type = "distill"
+        self.last_batch_type: str | None = None
+        self.last_loss_terms: dict[str, float] = {}
 
     def set_batch_type(self, batch_type: str) -> None:
         self._batch_type = batch_type
@@ -125,6 +168,8 @@ class CombinedDistillationLoss(nn.Module):
 
     def forward(self, sentence_features: list[dict[str, torch.Tensor]], labels: torch.Tensor) -> torch.Tensor:
         batch_type = self._batch_type
+        self.last_batch_type = batch_type
+        self.last_loss_terms = {}
         if isinstance(sentence_features, dict):
             sentence_features = [sentence_features]
         elif not isinstance(sentence_features, (list, tuple)):
@@ -141,32 +186,44 @@ class CombinedDistillationLoss(nn.Module):
                 and labels.dim() == 3
                 and labels.shape[1] == len(sentence_features)
             ):
-                terms.append(self.loss_weights["distill_mrl"] * self.distill_loss(sentence_features, labels))
+                distill_term = self.loss_weights["distill_mrl"] * self.distill_loss(sentence_features, labels)
+                terms.append(_ensure_finite(distill_term, "distill_mrl"))
+                self.last_loss_terms["distill_mrl"] = float(distill_term.detach())
             else:
                 raise ValueError(
                     "Distill batch is missing 3D teacher labels. "
                     "Run precompute_teacher_mrl.py and ensure teacher embeddings match training texts."
                 )
         elif batch_type == "retrieval":
-            terms.append(self.loss_weights["infonce"] * _scalar_loss(self.infonce_loss(sentence_features, labels)))
-            terms.append(self.loss_weights["gor"] * _scalar_loss(self.gor_loss(sentence_features, labels)))
-            if (
-                labels is not None
-                and torch.is_tensor(labels)
-                and labels.dim() == 3
-                and labels.shape[1] == len(sentence_features)
-            ):
-                terms.append(self.loss_weights["distill_mrl"] * 0.5 * self.distill_loss(sentence_features, labels))
+            embeddings = _embeddings_from_features(self.model, sentence_features)
+            infonce_term = self.loss_weights["infonce"] * self.infonce_loss.compute_loss_from_embeddings(
+                embeddings, labels
+            )
+            terms.append(_ensure_finite(infonce_term, "infonce"))
+            self.last_loss_terms["infonce"] = float(infonce_term.detach())
+
+            gor_output = self.gor_loss.compute_loss_from_embeddings(embeddings, labels)
+            gor_term = self.loss_weights["gor"] * _scalar_loss(gor_output)
+            terms.append(_ensure_finite(gor_term, "gor"))
+            self.last_loss_terms["gor"] = float(gor_term.detach())
         elif batch_type == "sts":
             if labels is None or not torch.is_tensor(labels):
                 raise ValueError("STS batch is missing score labels.")
-            terms.append(self.loss_weights["cosent"] * _scalar_loss(self.cosent_loss(sentence_features, labels)))
+            sts_labels = _normalize_sts_labels(labels)
+            embeddings = _embeddings_from_features(self.model, sentence_features)
+            sts_term = self.loss_weights["cosent"] * self.sts_loss.compute_loss_from_embeddings(
+                embeddings, sts_labels
+            )
+            terms.append(_ensure_finite(sts_term, "sts"))
+            self.last_loss_terms["sts"] = float(sts_term.detach())
         else:
             raise ValueError(f"Unknown batch_type: {batch_type}")
 
         if not terms:
             raise RuntimeError(f"No loss terms computed for batch_type={batch_type!r}")
-        return torch.stack(terms).sum()
+        total = torch.stack(terms).sum()
+        self.last_loss_terms["total"] = float(total.detach())
+        return total
 
 
 class MixedBatchRouter:

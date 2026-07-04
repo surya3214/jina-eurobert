@@ -239,6 +239,12 @@ def prepare_retrieval_dataset(dataset: Dataset) -> Dataset:
 def prepare_sts_dataset(dataset: Dataset) -> Dataset:
     if "label" in dataset.column_names and "score" not in dataset.column_names:
         dataset = dataset.rename_column("label", "score")
+
+    def _normalize_score(row: dict[str, Any]) -> dict[str, Any]:
+        row["score"] = float(row["score"]) / 5.0
+        return row
+
+    dataset = dataset.map(_normalize_score, desc="Normalizing STS scores")
     return dataset.select_columns(["anchor", "positive", "score"])
 
 
