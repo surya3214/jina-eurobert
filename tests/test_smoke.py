@@ -101,6 +101,25 @@ def test_student_model_loads_pretrained_weights():
     assert torch.allclose(loaded.float(), state[key].float())
 
 
+def test_eurobert_checkpoint_state_dict_from_local_dir(tmp_path):
+    from pathlib import Path
+
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file
+
+    from jina_eurobert.models import _eurobert_checkpoint_state_dict
+
+    checkpoint = Path(hf_hub_download("EuroBERT/EuroBERT-210m", "model.safetensors"))
+    local_dir = tmp_path / "eurobert-local"
+    local_dir.mkdir()
+    (local_dir / "model.safetensors").symlink_to(checkpoint)
+
+    state = _eurobert_checkpoint_state_dict(str(local_dir))
+    reference = load_file(str(checkpoint))
+    key = "model.layers.0.self_attn.q_proj.weight"
+    assert torch.allclose(state["layers.0.self_attn.q_proj.weight"].float(), reference[key].float())
+
+
 def test_student_forward_is_dataparallel_safe():
     import torch.nn as nn
 

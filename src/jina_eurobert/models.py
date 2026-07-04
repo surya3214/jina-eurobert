@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
@@ -35,10 +38,58 @@ def _register_eurobert_default_rope() -> None:
     rope_utils.ROPE_INIT_FUNCTIONS["default"] = rope_utils.ROPE_INIT_FUNCTIONS["proportional"]
 
 
+def _strip_eurobert_base_state_dict(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    if any(key.startswith("model.") for key in state):
+        return {key.removeprefix("model."): value for key, value in state.items() if key.startswith("model.")}
+    return state
+
+
+def _load_safetensors_file(path: Path) -> dict[str, torch.Tensor]:
+    return load_file(str(path))
+
+
+def _load_local_checkpoint_state(model_dir: Path) -> dict[str, torch.Tensor]:
+    single_path = model_dir / "model.safetensors"
+    if single_path.is_file():
+        return _load_safetensors_file(single_path)
+
+    index_path = model_dir / "model.safetensors.index.json"
+    if index_path.is_file():
+        weight_map = json.loads(index_path.read_text(encoding="utf-8"))["weight_map"]
+        state: dict[str, torch.Tensor] = {}
+        for shard_name in sorted(set(weight_map.values())):
+            shard_path = model_dir / shard_name
+            if not shard_path.is_file():
+                raise FileNotFoundError(f"Missing EuroBERT shard {shard_path}")
+            state.update(_load_safetensors_file(shard_path))
+        return state
+
+    pytorch_path = model_dir / "pytorch_model.bin"
+    if pytorch_path.is_file():
+        return torch.load(pytorch_path, map_location="cpu", weights_only=True)
+
+    raise FileNotFoundError(
+        f"No EuroBERT checkpoint found in {model_dir}. "
+        "Expected model.safetensors, model.safetensors.index.json, or pytorch_model.bin."
+    )
+
+
+def _resolve_eurobert_checkpoint_path(model_name: str) -> Path:
+    local_path = Path(model_name).expanduser()
+    if local_path.is_dir():
+        return local_path
+    if local_path.is_file() and local_path.suffix == ".safetensors":
+        return local_path
+    return Path(hf_hub_download(model_name, "model.safetensors"))
+
+
 def _eurobert_checkpoint_state_dict(model_name: str) -> dict[str, torch.Tensor]:
-    checkpoint_path = hf_hub_download(model_name, "model.safetensors")
-    state = load_file(checkpoint_path)
-    return {key.removeprefix("model."): value for key, value in state.items() if key.startswith("model.")}
+    checkpoint_path = _resolve_eurobert_checkpoint_path(model_name)
+    if checkpoint_path.is_dir():
+        state = _load_local_checkpoint_state(checkpoint_path)
+    else:
+        state = _load_safetensors_file(checkpoint_path)
+    return _strip_eurobert_base_state_dict(state)
 
 
 def _reload_eurobert_pretrained_weights(
