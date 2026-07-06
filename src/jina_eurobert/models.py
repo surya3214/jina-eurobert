@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import torch
@@ -13,6 +14,61 @@ from sentence_transformers.util import batch_to_device
 from transformers import AutoModel, modeling_rope_utils as rope_utils
 
 from jina_eurobert.device import model_device
+
+DEFAULT_EUROBERT_BASE_MODEL = "EuroBERT/EuroBERT-210m"
+EUROBERT_CUSTOM_CODE_FILES = (
+    "configuration_eurobert.py",
+    "modeling_eurobert.py",
+)
+
+
+def _resolve_transformer_module_dir(model_dir: Path) -> Path:
+    """Return the directory that holds the Transformer backbone weights."""
+    modules_path = model_dir / "modules.json"
+    if not modules_path.is_file():
+        return model_dir
+
+    modules = json.loads(modules_path.read_text(encoding="utf-8"))
+    for module in modules:
+        module_type = module.get("type", "")
+        if module_type.endswith(".Transformer") or module_type == "Transformer":
+            rel_path = module.get("path", "")
+            return model_dir / rel_path if rel_path else model_dir
+    return model_dir
+
+
+def bundle_eurobert_custom_code(
+    model_dir: str | Path,
+    *,
+    source_model: str = DEFAULT_EUROBERT_BASE_MODEL,
+) -> list[str]:
+    """Copy EuroBERT remote-code files into a local checkpoint when they are missing."""
+    model_dir = Path(model_dir).expanduser()
+    if not model_dir.is_dir():
+        return []
+
+    target_dir = _resolve_transformer_module_dir(model_dir)
+    copied: list[str] = []
+    for filename in EUROBERT_CUSTOM_CODE_FILES:
+        dest = target_dir / filename
+        if dest.is_file():
+            continue
+        source_path = Path(hf_hub_download(source_model, filename))
+        shutil.copy(source_path, dest)
+        copied.append(filename)
+    return copied
+
+
+def save_student_model(
+    model: SentenceTransformer,
+    path: str | Path,
+    *,
+    eurobert_base_model: str = DEFAULT_EUROBERT_BASE_MODEL,
+    **save_kwargs,
+) -> None:
+    """Save a distilled student and ensure EuroBERT custom code is bundled for reload."""
+    model.save(str(path), **save_kwargs)
+    bundle_eurobert_custom_code(path, source_model=eurobert_base_model)
 
 
 def patch_dataparallel_safe_forward(model: SentenceTransformer) -> SentenceTransformer:
@@ -152,14 +208,19 @@ def _student_forward_smoke_test(model: SentenceTransformer) -> None:
 
 
 def build_student_model(
-    model_name: str = "EuroBERT/EuroBERT-210m",
+    model_name: str = DEFAULT_EUROBERT_BASE_MODEL,
     max_seq_length: int = 512,
     trust_remote_code: bool = True,
     device: str | None = None,
     dtype: torch.dtype | None = torch.bfloat16,
+    eurobert_base_model: str = DEFAULT_EUROBERT_BASE_MODEL,
 ) -> SentenceTransformer:
     """Build EuroBERT student with last-token pooling and Query/Document prefixes."""
     _register_eurobert_default_rope()
+
+    local_path = Path(model_name).expanduser()
+    if local_path.is_dir():
+        bundle_eurobert_custom_code(local_path, source_model=eurobert_base_model)
 
     use_cuda = device is not None and str(device).startswith("cuda")
     attn_implementation = "sdpa" if use_cuda else "eager"
