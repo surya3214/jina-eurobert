@@ -16,7 +16,7 @@ from jina_eurobert.data import build_training_mixture, load_teacher_embedding_in
 from jina_eurobert.datasets_registry import manifest_path_for, read_manifest
 from jina_eurobert.hf_datasets import resolve_datasets_dir
 from jina_eurobert.losses import CombinedDistillationLoss
-from jina_eurobert.models import build_student_model
+from jina_eurobert.models import build_student_model, save_student_model
 from jina_eurobert.trainer import DistillationTrainer
 
 
@@ -133,9 +133,10 @@ def main() -> None:
             prompts=prompt_map,
         ),
     )
+    trainer.eurobert_base_model = student_cfg["model"]
     trainer.train()
     final_path = output_dir / "final"
-    trainer.model.save(str(final_path))
+    save_student_model(model, final_path, eurobert_base_model=student_cfg["model"])
     if os.environ.get("RANK", "0") == "0":
         print(f"Saved distilled model to {final_path}")
 

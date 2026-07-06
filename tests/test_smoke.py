@@ -120,6 +120,44 @@ def test_eurobert_checkpoint_state_dict_from_local_dir(tmp_path):
     assert torch.allclose(state["layers.0.self_attn.q_proj.weight"].float(), reference[key].float())
 
 
+def test_bundle_eurobert_custom_code_restores_missing_files(tmp_path):
+    import shutil
+
+    from sentence_transformers import SentenceTransformer
+
+    from jina_eurobert.models import EUROBERT_CUSTOM_CODE_FILES, build_student_model, bundle_eurobert_custom_code
+
+    source = tmp_path / "checkpoint"
+    model = build_student_model(device="cpu", dtype=torch.float32)
+    model.save(str(source))
+    for filename in EUROBERT_CUSTOM_CODE_FILES:
+        (source / filename).unlink()
+
+    copied = bundle_eurobert_custom_code(source)
+    assert copied == list(EUROBERT_CUSTOM_CODE_FILES)
+    for filename in EUROBERT_CUSTOM_CODE_FILES:
+        assert (source / filename).is_file()
+
+    loaded = SentenceTransformer(str(source))
+    assert loaded.max_seq_length > 0
+
+
+def test_build_student_model_bundles_missing_custom_code(tmp_path):
+    from jina_eurobert.models import EUROBERT_CUSTOM_CODE_FILES, build_student_model
+
+    source = tmp_path / "checkpoint"
+    model = build_student_model(device="cpu", dtype=torch.float32)
+    model.save(str(source))
+    for filename in EUROBERT_CUSTOM_CODE_FILES:
+        (source / filename).unlink()
+
+    reloaded = build_student_model(model_name=str(source), device="cpu", dtype=torch.float32)
+    for filename in EUROBERT_CUSTOM_CODE_FILES:
+        assert (source / filename).is_file()
+    embeddings = reloaded.encode(["Query: hello"], prompt_name="query", convert_to_tensor=True)
+    assert embeddings.shape[-1] == 768
+
+
 def test_student_forward_is_dataparallel_safe():
     import torch.nn as nn
 

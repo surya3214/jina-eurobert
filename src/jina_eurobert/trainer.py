@@ -13,6 +13,15 @@ from jina_eurobert.device import model_device, normalize_dataset_name
 class DistillationTrainer(SentenceTransformerTrainer):
     """Trainer that routes multi-dataset batches to the combined distillation loss."""
 
+    eurobert_base_model: str = "EuroBERT/EuroBERT-210m"
+
+    def _save(self, output_dir: str | None = None, state_dict=None) -> None:
+        from jina_eurobert.models import bundle_eurobert_custom_code
+
+        super()._save(output_dir=output_dir, state_dict=state_dict)
+        if output_dir is not None:
+            bundle_eurobert_custom_code(output_dir, source_model=self.eurobert_base_model)
+
     def prepare_loss(self, loss, model):
         if isinstance(loss, torch.nn.Module):
             loss = loss.to(model_device(model))
